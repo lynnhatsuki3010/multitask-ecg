@@ -1,0 +1,97 @@
+# ─────────────────────────────────────────────
+# ECG Multi-Task Transformer — Configuration
+# ─────────────────────────────────────────────
+
+# Paths
+paths:
+  raw_data:    "data/raw/PTB-XL"
+  processed:   "data/processed"
+  splits:      "data/splits"
+  checkpoints: "checkpoints"
+
+# Dataset
+dataset:
+  sampling_rate: 100          # 100 or 500 Hz
+  signal_length: 1000         # samples (100Hz × 10s)
+  num_leads: 12
+  test_fold: 10               # strat_fold == 10 → test set
+  val_fold:  9                # strat_fold == 9  → val set
+  label_threshold: 50.0       # SCP confidence threshold
+
+# Selected labels (7 labels)
+# Format: label_name → task (arrhythmia | mi | normal)
+labels:
+  - name: NORM
+    task: normal
+    index: 0
+  - name: AFIB
+    task: arrhythmia
+    index: 1
+  - name: STACH
+    task: arrhythmia
+    index: 2
+  - name: SBRAD
+    task: arrhythmia
+    index: 3
+  - name: AFLT
+    task: arrhythmia
+    index: 4
+  - name: IMI
+    task: mi
+    index: 5
+  - name: ASMI
+    task: mi
+    index: 6
+
+# Label groups for multi-task heads
+label_groups:
+  arrhythmia: [0, 1, 2, 3, 4]   # indices of arrhythmia labels (incl. NORM)
+  mi:         [5, 6]             # indices of MI labels
+
+# HRV regression (set to false to skip)
+hrv:
+  enabled: true
+  features: [rmssd, sdnn, mean_hr]   # target HRV metrics
+
+# Preprocessing
+preprocessing:
+  bandpass_low: 0.5
+  bandpass_high: 40.0
+  notch_freq: 50.0
+  normalize: zscore              # zscore | minmax | none
+
+# Model
+model:
+  patch_size: 25                 # 1000 / 25 = 40 patches
+  d_model: 128
+  nhead: 4
+  num_encoder_layers: 4
+  dim_feedforward: 256
+  dropout: 0.1
+  use_cls_token: true
+
+# Training
+training:
+  batch_size: 64
+  epochs: 20
+  lr: 1e-4
+  # weight_decay: 1e-4           # [Disabled for baseline]
+  scheduler: cosine              # cosine | step | none (still active)
+  # warmup_epochs: 5             # [Disabled for baseline]
+  # Multi-task loss weights
+  loss_weights:
+    arrhythmia: 1.0
+    mi: 1.0
+    hrv: 0.1                     # scaled down since regression
+  # Class imbalance
+  use_pos_weight: false          # [Disabled for baseline]
+  seed: 42
+  num_workers: 0
+  pin_memory: true
+  save_every: 5                  # save checkpoint every N epochs
+  early_stopping_patience: 10
+
+# Evaluation
+eval:
+  metrics: [auroc, f1, accuracy]
+  threshold: 0.5                 # sigmoid threshold for binary prediction

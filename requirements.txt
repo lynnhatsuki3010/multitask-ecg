@@ -8,3 +8,4 @@ neurokit2>=0.2.0
 matplotlib>=3.6.0
 tqdm>=4.64.0
 PyYAML>=6.0
+optuna>=3.0.0

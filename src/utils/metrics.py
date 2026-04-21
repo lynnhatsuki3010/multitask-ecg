@@ -6,7 +6,8 @@ import numpy as np
 import torch
 from sklearn.metrics import (
     roc_auc_score, 
-    f1_score, 
+    f1_score,
+    fbeta_score,
     average_precision_score,
     precision_score,
     recall_score,
@@ -91,6 +92,89 @@ def compute_classification_metrics(
     )
 
     return metrics
+
+
+def find_optimal_thresholds(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    label_names: List[str],
+    candidates: np.ndarray = None,
+    min_pos_count: int = 20,
+    max_rare_threshold: float = 0.4,
+    class_beta: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    """
+    For each class, sweep threshold candidates and pick the one
+    that maximises F_beta on the given set (should be val set only).
+
+    - Rare classes (< min_pos_count positives): threshold capped at max_rare_threshold
+      to avoid degenerate precision=1/recall~0 outcomes (e.g. AFLT).
+    - class_beta: per-class beta for F_beta score.
+        beta=1.0  → standard F1 (default)
+        beta=0.5  → precision-weighted (good for MI: reduces false positives)
+        beta=2.0  → recall-weighted (good for critical missed diagnoses)
+
+    Args:
+        y_true:       (N, K) binary ground truth.
+        y_score:      (N, K) sigmoid probabilities.
+        label_names:  list of K strings.
+        candidates:   1-D array of thresholds to try. Defaults to 0.05…0.95.
+        min_pos_count: classes with fewer positive val samples get capped threshold.
+        max_rare_threshold: maximum threshold for rare classes.
+        class_beta:   dict of label_name → beta. Missing labels default to 1.0.
+
+    Returns:
+        Dict  label_name → optimal threshold (float).
+    """
+    if candidates is None:
+        candidates = np.arange(0.05, 0.96, 0.05)
+    if class_beta is None:
+        class_beta = {}
+
+    thresholds = {}
+    for i, name in enumerate(label_names):
+        col_true  = y_true[:, i]
+        col_score = y_score[:, i]
+
+        if col_true.sum() == 0 or col_true.sum() == len(col_true):
+            thresholds[name] = 0.5
+            continue
+
+        n_pos    = int(col_true.sum())
+        is_rare  = n_pos < min_pos_count
+        beta     = class_beta.get(name, 1.0)
+
+        # For rare classes, restrict search to below the cap
+        search_candidates = candidates
+        if is_rare:
+            search_candidates = candidates[candidates <= max_rare_threshold]
+            if len(search_candidates) == 0:
+                search_candidates = np.array([max_rare_threshold])
+
+        best_score, best_t = -1.0, 0.5
+        for t in search_candidates:
+            col_pred = (col_score >= t).astype(float)
+            score = fbeta_score(col_true, col_pred, beta=beta, zero_division=0)
+            if score > best_score:
+                best_score, best_t = score, float(t)
+
+        thresholds[name] = best_t
+
+    return thresholds
+
+
+def apply_thresholds(
+    y_score: np.ndarray,
+    label_names: List[str],
+    thresholds: Dict[str, float],
+    default: float = 0.5,
+) -> np.ndarray:
+    """Apply per-class thresholds to score matrix → binary prediction matrix."""
+    y_pred = np.zeros_like(y_score)
+    for i, name in enumerate(label_names):
+        t = thresholds.get(name, default)
+        y_pred[:, i] = (y_score[:, i] >= t).astype(float)
+    return y_pred
 
 
 def compute_hrv_metrics(

@@ -43,7 +43,7 @@ class PositionalEncoding(nn.Module):
 
 # ─── Patch Embedding ─────────────────────────────────────────────────────────
 
-class PatchEmbedding(nn.Module):
+class LinearPatchEmbedding(nn.Module):
     """
     Split 12-lead ECG into non-overlapping patches and project to d_model.
 
@@ -79,6 +79,91 @@ class PatchEmbedding(nn.Module):
         x = self.norm(x)
         return x
 
+class MultiScaleConvEmbedding(nn.Module):
+    """
+    Multi-scale parallel CNN stem for ECG patch embedding.
+
+    3 branches with different receptive fields target distinct ECG morphologies:
+      - Branch 1 (kernel=7,  70ms):  Fast spikes  → QRS complex, arrhythmia
+      - Branch 2 (kernel=25, 250ms): Medium waves → P-wave, T-wave morphology
+      - Branch 3 (kernel=51, 510ms): Slow trends  → ST elevation/depression (MI)
+
+    Supports arbitrary patch_size: total downsampling stride = patch_size.
+    Implemented as two-stage: stride_a × stride_b = patch_size.
+      | patch_size | stride_a | stride_b | patches (1000 samples) |
+      |------------|----------|----------|------------------------|
+      |     25     |    5     |    5     |          40            |
+      |     20     |    4     |    5     |          50            |
+      |     16     |    4     |    4     |        62 (≈60)        |
+      |     10     |    2     |    5     |         100            |
+    """
+
+    def __init__(self, num_leads: int = 12, patch_size: int = 25, d_model: int = 128, fs: int = 100):
+        super().__init__()
+        scale = max(1, fs // 100)
+        # Factorize patch_size into two strides (stride_a × stride_b ≈ patch_size)
+        # Keep stride_b = 5 when possible for consistent fusion kernel
+        # Scale the branch block downsampling if a high patch_size ensures a large uniform stride
+        if patch_size % (5 * scale) == 0:
+            stride_a, stride_b = patch_size // 5, 5
+        elif patch_size % (4 * scale) == 0:
+            stride_a, stride_b = patch_size // 4, 4
+        elif patch_size % (2 * scale) == 0:
+            stride_a, stride_b = patch_size // 2, 2
+        else:
+            stride_a, stride_b = patch_size, 1
+
+        branch_ch  = d_model // 3
+        branch_ch3 = d_model - 2 * branch_ch   # absorb rounding
+
+        # ── Branch 1: QRS / Arrhythmia (kernel 70ms) ──────
+        b1_k, b1_p = 7 * scale, 3 * scale
+        self.branch1 = nn.Sequential(
+            nn.Conv1d(num_leads, branch_ch, kernel_size=b1_k,  stride=stride_a, padding=b1_p,  bias=False),
+            nn.BatchNorm1d(branch_ch),
+            nn.GELU(),
+        )
+
+        # ── Branch 2: P/T-wave morphology (kernel 250ms) ─
+        b2_k, b2_p = 25 * scale, 12 * scale
+        self.branch2 = nn.Sequential(
+            nn.Conv1d(num_leads, branch_ch, kernel_size=b2_k, stride=stride_a, padding=b2_p, bias=False),
+            nn.BatchNorm1d(branch_ch),
+            nn.GELU(),
+        )
+
+        # ── Branch 3: ST-segment / MI trends (kernel 510ms)
+        b3_k, b3_p = 51 * scale, 25 * scale
+        self.branch3 = nn.Sequential(
+            nn.Conv1d(num_leads, branch_ch3, kernel_size=b3_k, stride=stride_a, padding=b3_p, bias=False),
+            nn.BatchNorm1d(branch_ch3),
+            nn.GELU(),
+        )
+
+        # ── Fusion: merge 3 branches + further downsample by stride_b ──────────
+        self.fuse = nn.Sequential(
+            nn.Conv1d(d_model, d_model, kernel_size=7, stride=stride_b, padding=3, bias=False),  # fusion kernel stays the same, operating on patch semantics
+            nn.BatchNorm1d(d_model),
+            nn.GELU(),
+        )
+
+
+        self._stride_a = stride_a
+        self._stride_b = stride_b
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, 12, T)  →  (B, T//patch_size, d_model)"""
+        b1 = self.branch1(x)             # (B, d/3,      T//stride_a)
+        b2 = self.branch2(x)             # (B, d/3,      T//stride_a)
+        b3 = self.branch3(x)             # (B, d-2*(d/3),T//stride_a)
+
+        fused = torch.cat([b1, b2, b3], dim=1)   # (B, d_model, T//stride_a)
+        out   = self.fuse(fused)                  # (B, d_model, T//patch_size)
+        return out.transpose(1, 2)                # (B, num_patches, d_model)
+
+
+
+
 
 # ─── ECG Transformer ─────────────────────────────────────────────────────────
 
@@ -100,6 +185,7 @@ class ECGTransformer(nn.Module):
         num_encoder_layers: int = 4,
         dim_feedforward: int = 256,
         dropout: float = 0.1,
+        fs: int = 100,
     ):
         super().__init__()
         self.patch_size = patch_size
@@ -107,8 +193,8 @@ class ECGTransformer(nn.Module):
 
         num_patches = signal_length // patch_size
 
-        # Patch embedding
-        self.patch_embed = PatchEmbedding(num_leads, patch_size, d_model)
+        # Patch embedding (Multi-Scale CNN Stem: QRS / P-T wave / ST-segment)
+        self.patch_embed = MultiScaleConvEmbedding(num_leads, patch_size, d_model, fs=fs)
 
         # Learnable [CLS] token
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))

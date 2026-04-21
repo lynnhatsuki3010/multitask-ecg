@@ -11,12 +11,12 @@ paths:
 
 # Dataset
 dataset:
-  sampling_rate: 100          # 100 or 500 Hz
-  signal_length: 1000         # samples (100Hz × 10s)
+  sampling_rate: 500          # 100 or 500 Hz
+  signal_length: 5000         # samples (500Hz × 10s)
   num_leads: 12
   test_fold: 10               # strat_fold == 10 → test set
   val_fold:  9                # strat_fold == 9  → val set
-  label_threshold: 50.0       # SCP confidence threshold
+  label_threshold: 50            # [Fix] only keep labels with confidence >= 50 (filter noisy labels)
 
 # Selected labels (7 labels)
 # Format: label_name → task (arrhythmia | mi | normal)
@@ -62,34 +62,53 @@ preprocessing:
 
 # Model
 model:
-  patch_size: 25                 # 1000 / 25 = 40 patches
-  d_model: 128
-  nhead: 4
-  num_encoder_layers: 4
-  dim_feedforward: 256
-  dropout: 0.1
+  patch_size: 100                # [Tuned] 50 patches @ 200ms/patch for 5000 length
+  d_model: 192                   # [Restored] original size gave best F1
+  nhead: 8                       # 192 / 8 = 24 dim per head
+  num_encoder_layers: 5          # [Restored] 5 layers
+  dim_feedforward: 768           # = d_model(192) * 4
+  dropout: 0.15                  # [Reverted] 0.25 hurt AFLT/SBRAD (too few samples for high dropout)
+  mi_lead_dim: 64                # [Phase2] lead extractor output dim per group
   use_cls_token: true
+
+# Augmentation flags (each can be toggled independently)
+# Phase A ablation: enable ONE at a time, run 02_train.py, compare metrics
+augmentation:
+  aug_lead_dropout:    false    # [Phase A1] zero 1-2 random leads
+  aug_random_crop:     false    # [Phase A2] random 80% crop + resize
+  aug_baseline_wander: false    # [Phase A3] low-freq sinusoidal drift
+  aug_time_warp:       false    # [Phase A4] non-uniform time stretching
+  aug_mixup:           false    # Linear interpolation of signals & labels
+  mixup_alpha:         0.2      # Beta distribution parameter for Mixup
 
 # Training
 training:
-  batch_size: 64
-  epochs: 20
-  lr: 1e-4
-  # weight_decay: 1e-4           # [Disabled for baseline]
-  scheduler: cosine              # cosine | step | none (still active)
-  # warmup_epochs: 5             # [Disabled for baseline]
+  batch_size: 128                # [Tuned]
+  epochs: 50
+  lr: 1.4945e-4                  # [Tuned]
+  weight_decay: 1.0e-3           # [AntiOverfit] balanced: 4.67e-4 too low, 5e-3 too high
+  scheduler: one_cycle           # one_cycle | cosine | cosine_restart | step
+  one_cycle_pct_start: 0.2       # 20% warmup, remaining 80% cosine decay
+  warmup_epochs: 5               # fallback for non-one_cycle schedulers
+  cosine_T0: 15                  # chu ky restart dau (chi dung khi cosine_restart)
+
   # Multi-task loss weights
   loss_weights:
     arrhythmia: 1.0
-    mi: 1.0
+    mi: 1.5                      # [Boosted] Extra gradient for ST-segment MI features
     hrv: 0.1                     # scaled down since regression
-  # Class imbalance
-  use_pos_weight: false          # [Disabled for baseline]
+  label_smoothing: 0.05          # [AntiOverfit] soft labels reduce overconfidence
+  # Class imbalance tricks (enable one at a time)
+  use_pos_weight: true           # BCEWithLogitsLoss pos_weight (always built from pos_weights.json)
+  use_focal: false               # [Tuned] replace BCE with Focal Loss
+  weighted_sampler: false        # [Phase B2] WeightedRandomSampler — oversample minority classes
+  focal_gamma: 2.0               # Focal Loss gamma (higher = more focus on hard examples)
+  focal_alpha: 0.25              # Focal Loss alpha (weight for positive class)
   seed: 42
   num_workers: 0
   pin_memory: true
   save_every: 5                  # save checkpoint every N epochs
-  early_stopping_patience: 10
+  early_stopping_patience: 25   # enough epochs for cosine LR to fully decay
 
 # Evaluation
 eval:

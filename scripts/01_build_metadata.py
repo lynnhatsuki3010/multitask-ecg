@@ -42,7 +42,7 @@ def parse_args():
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 def load_config(config_path: str) -> dict:
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -77,9 +77,9 @@ def main():
     cfg = load_config(args.config)
 
     raw_path       = cfg["paths"]["raw_data"]
-    processed_path = cfg["paths"]["processed"]
-    splits_path    = cfg["paths"]["splits"]
     fs             = cfg["dataset"]["sampling_rate"]
+    processed_path = f"{cfg['paths']['processed']}_{fs}hz"
+    splits_path    = f"{cfg['paths']['splits']}_{fs}hz"
     threshold      = cfg["dataset"]["label_threshold"]
     test_fold      = cfg["dataset"]["test_fold"]
     val_fold       = cfg["dataset"]["val_fold"]

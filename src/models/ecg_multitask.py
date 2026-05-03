@@ -217,3 +217,26 @@ class ECGMultiTaskModel(nn.Module):
 
         return outputs
 
+    def freeze_for_phase2(self) -> None:
+        """
+        Freeze the backbone and arrhythmia head for Phase 2 fine-tuning.
+        Also disables MI gradient isolation since only MI receives gradients.
+        """
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        
+        for param in self.arrhythmia_pool.parameters():
+            param.requires_grad = False
+            
+        for param in self.arrhythmia_head.parameters():
+            param.requires_grad = False
+            
+        for param in self.sequence_pool.parameters():
+            param.requires_grad = False
+            
+        if self.hrv_enabled:
+            for param in self.hrv_head.parameters():
+                param.requires_grad = False
+                
+        # Disable gradient isolation
+        self.mi_gradient_scale = 1.0

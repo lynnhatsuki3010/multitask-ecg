@@ -105,6 +105,7 @@ class Trainer:
         self.patience   = train_cfg.get("early_stopping_patience", 10)
         self.monitor_metric = train_cfg.get("monitor_metric", "macro_f1")
         self.checkpoint_dir = cfg.get("paths", {}).get("checkpoints", "checkpoints")
+        self.freeze_epoch = train_cfg.get("freeze_backbone_at_epoch", -1)
 
         # ── Optimizer — AdamW with differential weight decay + MI head LR ─────────
         # Embedding / LayerNorm / bias params should NOT be weight-decayed:
@@ -376,6 +377,14 @@ class Trainer:
         print(f"{'='*60}\n")
 
         for epoch in range(1, self.epochs + 1):
+            if epoch == self.freeze_epoch:
+                print(f"\n{'-'*60}")
+                print(f"  [Phase 2 Initiated] Freezing Backbone & Arrhythmia Head")
+                print(f"  Gradient isolation disabled. Fine-tuning MI Head only.")
+                print(f"{'-'*60}\n")
+                if hasattr(self.model, "freeze_for_phase2"):
+                    self.model.freeze_for_phase2()
+
             t0 = time.time()
 
             # Init gradient norm accumulators for this epoch

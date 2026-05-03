@@ -108,20 +108,20 @@ _Run: run_20260503_112137_hybrid-tf_
 | Arrhy macro F1 | 0.751 | **0.768** | `+0.017` 📈 |
 | Arrhy macro AUROC| 0.968 | **0.984** | `+0.016` 📈 |
 
-**Phân tích kết quả:**
-1. **Arrhythmia bứt phá mạnh**: F1 vọt lên 0.768 và AUROC đạt 0.984 (cực kỳ tốt). Việc tách biệt Gradient Isolation đã giúp backbone không bị "kẹt" ở cục bộ, cùng với Cosine Restart scheduler giúp các nhãn Arrhythmia có cơ hội thoát khỏi minimum cục bộ tốt hơn.
-2. **IMI có cải thiện nhưng vẫn bị chững (Precision Bottleneck)**:
-   - AUROC tăng lên 0.950, tức là khả năng phân biệt âm/dương của IMI đang rất tốt.
-   - Recall của IMI cực cao (0.81) nhưng Precision bị kẹt ở mức thấp (0.355). Điều này cho thấy mô hình đang "overpredict" IMI (dự đoán dương tính giả nhiều) dẫn đến F1 và AUPRC không thể tăng mạnh. 
-   - Nguyên nhân chính: Label IMI rất dễ bị lẫn với một số đặc điểm repolarization bình thường hoặc nhiễu.
-3. **Differential LR hoạt động đúng thiết kế**: MI Head train độc lập tốt hơn nên các metric phân biệt (AUROC) đều tốt, nhưng bài toán mất cân bằng class vẫn tác động lên Precision của IMI.
+**Results Analysis (pos_weight):**
+1. **Arrhythmia Breakthrough**: F1 jumped to 0.768 and AUROC reached 0.984. Gradient Isolation successfully prevented the backbone from getting stuck in local minima, and the Cosine Restart scheduler allowed the Arrhythmia head to escape suboptimal plateaus.
+2. **IMI Improved but Stagnated (Precision Bottleneck)**:
+   - AUROC increased to 0.950, indicating excellent positive/negative separation capability.
+   - IMI Recall is very high (0.81), but Precision is bottlenecked at a low level (0.355). This shows the model is heavily "over-predicting" IMI (many false positives), preventing F1 and AUPRC from climbing further.
+   - Root Cause: IMI labels easily confuse with normal repolarization variants or noise.
+3. **Differential LR works as designed**: The MI Head trains better independently, improving discrimination metrics (AUROC), but class imbalance still drastically impacts IMI Precision due to `pos_weight`.
 
 ---
 
 ### Results (Focal Loss Update)
 _Run: run_20260503_160509_hybrid-tf-focal (Disabled pos_weight, Enabled Focal Loss gamma=2.0)_
 
-Nhận thấy vấn đề Over-prediction ở run trên khiến Validation Loss tăng vọt, chúng ta đã cập nhật dùng Focal Loss. Dưới đây là kết quả mới nhất:
+Noticing the massive Validation Loss explosion caused by over-prediction, we switched to Focal Loss. 
 
 | Metric | E-02 (pos_weight) | E-02 (Focal Loss) | Delta |
 |--------|-------------------|-------------------|-------|
@@ -132,13 +132,51 @@ Nhận thấy vấn đề Over-prediction ở run trên khiến Validation Loss 
 | Arrhy macro F1 | 0.768 | **0.811** | `+0.043` 🚀 |
 | Arrhy macro AUROC| 0.984 | **0.984** | `+0.000` ➖ |
 
-**Phân tích kết quả Focal Loss:**
-1. **Focal Loss chữa hoàn toàn hiện tượng Over-prediction**:
-   - Bằng việc vô hiệu hóa `pos_weight` và dùng `Focal Loss` (gamma=2.0), hiện tượng bùng nổ Validation Loss đã biến mất. 
-   - Thay vì mù quáng bắt mọi ca bệnh là IMI (để tối ưu pos_weight), Focal Loss ép mô hình học cách tự tin hơn vào các ca khó. Kết quả: **IMI Precision tăng mạnh từ 0.355 lên 0.404**, đẩy IMI F1 (untuned) lên **0.513** (vượt xa baseline).
-2. **Arrhythmia thăng hoa rực rỡ**:
-   - F1 của Arrhythmia nhảy vọt lên **0.811** (tăng mạnh 4.3%).
-   - F1 của AFLT (rung nhĩ cuồng) từng là điểm yếu (F1 ~ 0.47) nay đã vọt lên **0.666**. Các nhãn như NORM, STACH, PVC đều đạt F1 > 0.82. Việc kết hợp Gradient Isolation và Focal Loss đã tạo ra môi trường học tập hoàn hảo cho các nhãn này.
-3. **Kết luận chung cho E-02**:
-   - Chúng ta đã phá vỡ được "trần F1" của IMI (vượt mốc 0.5) và đưa Arrhythmia lên một tầm cao mới (>0.8 F1).
-   - Kiến trúc chung đã tối ưu và ổn định tuyệt đối.
+**Results Analysis (Focal Loss):**
+1. **Focal Loss entirely cured Over-prediction**:
+   - By disabling `pos_weight` and enabling `Focal Loss` (gamma=2.0), the Validation Loss explosion vanished.
+   - Instead of blindly forcing positive predictions to satisfy `pos_weight`, Focal Loss forces the model to learn difficult samples. Result: **IMI Precision surged from 0.355 to 0.404**, pushing untuned IMI F1 to **0.513** (breaking the 0.5 ceiling).
+2. **Arrhythmia Outstanding Performance**:
+   - Arrhythmia F1 skyrocketed to **0.811** (a massive 4.3% jump).
+   - AFLT (Atrial Flutter), which was historically a severe weakness (F1 ~ 0.47), surged to **0.666**. NORM, STACH, PVC all achieved F1 > 0.82. The combination of Gradient Isolation and Focal Loss created a perfect learning environment for these labels.
+
+---
+
+### Results (MixUp Augmentation)
+_Run: run_20260503_183316_hybrid-tf-focal-aug-mxp (Focal Loss + MixUp alpha=0.2)_
+
+We tested MixUp to see if it could smooth the decision boundaries and further improve IMI.
+
+| Metric | E-02 (Focal Loss) | E-02 (Focal + MixUp) | Delta (MixUp vs Focal) |
+|--------|-------------------|----------------------|------------------------|
+| IMI AUROC | 0.952 | 0.951 | `-0.001` 📉 |
+| IMI AUPRC | 0.528 | **0.530** | `+0.002` 📈 |
+| IMI F1 (untuned)| 0.513 | 0.494 | `-0.019` 📉 |
+| ASMI F1 (untuned)| 0.734 | 0.734 | `+0.000` ➖ |
+| Arrhy macro F1 | 0.811 | **0.818** | `+0.007` 📈 |
+| Arrhy macro AUROC| 0.984 | **0.985** | `+0.001` 📈 |
+
+**Results Analysis (MixUp):**
+1. **MixUp failed to improve IMI**:
+   - While MixUp slightly improved Arrhythmia F1 (0.818), it **degraded IMI F1** back to 0.494 and dropped IMI Precision to 0.361.
+   - Reason: IMI (Inferior Myocardial Infarction) relies on highly subtle spatial features (subtle ST segment elevation/depression in leads II, III, aVF). Cross-interpolating two different ECG signals via MixUp directly distorts or flattens these critical spatial diagnostic features, confusing the model.
+
+**E-02 Final Conclusion**:
+   - We broke the IMI "F1 ceiling" (>0.5 using pure Focal Loss) and pushed Arrhythmia to an outstanding level (>0.8 F1).
+   - The unified architecture is highly optimized. The best config configuration is: **Focal Loss = True, pos_weight = False, MixUp = False**.
+
+---
+
+## E-03 Phased Training Strategy Plan
+
+While Arrhythmia is approaching near-perfect metrics, IMI is still struggling due to shared feature representations. E-03 will adopt a **2-Phase Training Strategy**:
+
+1. **Phase 1: Full Multitask Pretraining**
+   - Train the full model (Backbone + Arrhy Head + MI Head) using the optimal E-02 configuration (Focal Loss, No Mixup) for 20-30 epochs.
+   - Goal: Allow the Backbone to learn robust shared representations and bring the Arrhythmia Head to full convergence.
+2. **Phase 2: Arrhythmia Freezing & MI Fine-tuning**
+   - **Freeze** the entire Backbone and Arrhythmia Head.
+   - Disable Gradient Isolation (since only one task will be actively updated).
+   - **Unfreeze** only the parameters belonging to the MI Head (LeadGroupEncoder + Classifier).
+   - Fine-tune with a low learning rate for 10-20 epochs.
+   - Goal: Force the MI Head to extract every last bit of task-specific information from the frozen feature maps, strictly optimizing for IMI Precision without deteriorating Arrhythmia performance.

@@ -16,15 +16,15 @@ env/
 .env/
 ENV/
 
-# ─── Data ─────────
+# ─── Data ─────────────────────────────────────────────────────────
 data/raw/
-data/processed/
-data/splits/
+data/processed*/
+data/splits*/
 
 # ─── Model checkpoints ────────────────────────────────────────────
 checkpoints/
 
-# ─── Jupyter ────────────────────────────────────
+# ─── Jupyter ────────────────────────────────────────────────────
 .ipynb_checkpoints/
 *.ipynb
 
@@ -44,3 +44,5 @@ desktop.ini
 *.tmp
 runs/
 wandb/
+scripts/_tmp*
+tmp_sweep_configs/

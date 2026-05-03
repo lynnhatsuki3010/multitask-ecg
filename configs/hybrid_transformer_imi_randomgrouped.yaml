@@ -69,6 +69,7 @@ model:
   head_hidden_dim: 128
   mi_branch_dim: 128
   dropout: 0.15
+  mi_gradient_scale: 0.3
   hrv_detach: true
 
 augmentation:
@@ -81,13 +82,13 @@ augmentation:
 
 training:
   batch_size: 96
-  epochs: 30
+  epochs: 50
   lr: 1.0e-4
   weight_decay: 1.0e-3
-  scheduler: one_cycle
-  one_cycle_pct_start: 0.2
+  mi_lr_multiplier: 3.0
+  scheduler: cosine_restart
+  cosine_T0: 10
   warmup_epochs: 5
-  cosine_T0: 15
   loss_weights:
     arrhythmia: 1.0
     mi: 1.8
@@ -107,7 +108,7 @@ training:
   num_workers: 0
   pin_memory: true
   save_every: 5
-  early_stopping_patience: 8
+  early_stopping_patience: 12
   monitor_metric: imi_auprc
 
 eval:

@@ -106,30 +106,58 @@ class Trainer:
         self.monitor_metric = train_cfg.get("monitor_metric", "macro_f1")
         self.checkpoint_dir = cfg.get("paths", {}).get("checkpoints", "checkpoints")
 
-        # ── Optimizer — AdamW with differential weight decay ─────────────────────
+        # ── Optimizer — AdamW with differential weight decay + MI head LR ─────────
         # Embedding / LayerNorm / bias params should NOT be weight-decayed:
         # regularizing them causes representation collapse on small datasets.
-        # Only projection / attention / FFN weight matrices get weight_decay.
+        # MI head gets higher LR to compensate for gradient competition.
         lr           = float(train_cfg.get("lr", 1e-4))
         weight_decay = float(train_cfg.get("weight_decay", 5e-3))
+        mi_lr_mult   = float(train_cfg.get("mi_lr_multiplier", 1.0))
 
         no_decay_names = ("bias", "norm", "embed", "cls_token", "pos_embed")
-        decay_params, no_decay_params = [], []
+        mi_param_names = ("mi_head", "inferior", "reciprocal", "anterior",
+                          "imi_token_pool", "asmi_token_pool")
+
+        mi_decay, mi_nodecay = [], []
+        other_decay, other_nodecay = [], []
+
         for name, param in model.named_parameters():
             if not param.requires_grad:
                 continue
-            if any(nd in name.lower() for nd in no_decay_names):
-                no_decay_params.append(param)
-            else:
-                decay_params.append(param)
+            is_mi = any(mp in name for mp in mi_param_names)
+            is_nodecay = any(nd in name.lower() for nd in no_decay_names)
 
-        self.optimizer = AdamW(
-            [
-                {"params": decay_params,    "weight_decay": weight_decay},
-                {"params": no_decay_params, "weight_decay": 0.0},
-            ],
-            lr=lr,
-        )
+            if is_mi:
+                if is_nodecay:
+                    mi_nodecay.append(param)
+                else:
+                    mi_decay.append(param)
+            else:
+                if is_nodecay:
+                    other_nodecay.append(param)
+                else:
+                    other_decay.append(param)
+
+        mi_lr = lr * mi_lr_mult
+        param_groups = [
+            {"params": other_decay,   "weight_decay": weight_decay, "lr": lr},
+            {"params": other_nodecay, "weight_decay": 0.0,          "lr": lr},
+            {"params": mi_decay,      "weight_decay": weight_decay, "lr": mi_lr},
+            {"params": mi_nodecay,    "weight_decay": 0.0,          "lr": mi_lr},
+        ]
+        # Remove empty groups
+        param_groups = [g for g in param_groups if len(g["params"]) > 0]
+        self.optimizer = AdamW(param_groups)
+
+        n_mi = len(mi_decay) + len(mi_nodecay)
+        n_other = len(other_decay) + len(other_nodecay)
+        if mi_lr_mult != 1.0:
+            print(f"  Differential LR: backbone+arrhy={lr:.1e} ({n_other} params), "
+                  f"MI head={mi_lr:.1e} ({n_mi} params, {mi_lr_mult}x)")
+
+        # Store param refs for gradient norm logging
+        self._mi_params = mi_decay + mi_nodecay
+        self._other_params = other_decay + other_nodecay
 
         # ── Scheduler ──────────────────────────────────────────────────────
         sched_type    = train_cfg.get("scheduler", "cosine")
@@ -138,11 +166,12 @@ class Trainer:
 
         if sched_type == "one_cycle":
             # OneCycleLR: warmup → peak → smooth cosine decay.
-            # No discontinuous restarts — ideal for multi-task loss balancing.
+            # Supports differential LR via per-group max_lr list.
             pct_start = train_cfg.get("one_cycle_pct_start", 0.2)  # 20% warmup
+            max_lrs = [g["lr"] for g in self.optimizer.param_groups]
             self.scheduler = OneCycleLR(
                 self.optimizer,
-                max_lr=lr,
+                max_lr=max_lrs,
                 epochs=self.epochs,
                 steps_per_epoch=steps_per_epoch,
                 pct_start=pct_start,
@@ -296,6 +325,22 @@ class Trainer:
                     self.optimizer.zero_grad()
                     loss_dict["total"].backward()
                     nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+                    # Accumulate gradient norms for monitoring task balance
+                    if hasattr(self, '_grad_norms_mi'):
+                        mi_gn = sum(
+                            p.grad.norm().item() ** 2
+                            for p in self._mi_params
+                            if p.grad is not None
+                        ) ** 0.5
+                        other_gn = sum(
+                            p.grad.norm().item() ** 2
+                            for p in self._other_params
+                            if p.grad is not None
+                        ) ** 0.5
+                        self._grad_norms_mi.append(mi_gn)
+                        self._grad_norms_other.append(other_gn)
+
                     self.optimizer.step()
                     # OneCycleLR requires step() every batch (not every epoch)
                     if self.scheduler is not None and getattr(self, "_step_scheduler_per_batch", False):
@@ -333,7 +378,18 @@ class Trainer:
         for epoch in range(1, self.epochs + 1):
             t0 = time.time()
 
+            # Init gradient norm accumulators for this epoch
+            self._grad_norms_mi = []
+            self._grad_norms_other = []
+
             train_metrics = self._run_epoch(self.train_loader, train=True)
+
+            # Compute and store average gradient norms
+            avg_mi_gn = float(np.mean(self._grad_norms_mi)) if self._grad_norms_mi else 0.0
+            avg_other_gn = float(np.mean(self._grad_norms_other)) if self._grad_norms_other else 0.0
+            train_metrics["grad_norm/mi"] = avg_mi_gn
+            train_metrics["grad_norm/backbone"] = avg_other_gn
+
             val_metrics   = self._run_epoch(self.val_loader,   train=False)
 
             # Optional: val metrics with per-class thresholds (aligns with post-train test protocol)
@@ -368,6 +424,12 @@ class Trainer:
             if tune_every > 0 and epoch % tune_every == 0 and not np.isnan(val_f1_imi_t):
                 extra = f" | imi_f1_tuned={val_f1_imi_t:.4f}"
 
+            # Gradient norm info
+            gn_mi = train_metrics.get("grad_norm/mi", 0.0)
+            gn_bb = train_metrics.get("grad_norm/backbone", 0.0)
+            gn_ratio = gn_mi / max(gn_bb, 1e-8)
+            grad_info = f" | gn_mi/bb={gn_ratio:.2f}"
+
             print(
                 f"Epoch [{epoch:3d}/{self.epochs}] "
                 f"| train_loss={train_loss:.4f} "
@@ -378,7 +440,7 @@ class Trainer:
                 f"| imi_auprc={val_auprc_imi:.4f} "
                 f"| arrhy_auroc={val_auroc_arrhy:.4f} "
                 f"| mi_auroc={val_auroc_mi:.4f} "
-                f"{extra}"
+                f"{extra}{grad_info}"
                 f"| {elapsed:.1f}s"
             )
 

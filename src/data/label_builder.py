@@ -22,6 +22,14 @@ LABEL_TO_TASK = {
     "ASMI":  "mi",
 }
 
+# PTB-XL rhythm/form statements use confidence=0.0 to mean "Present".
+# Diagnostic statements (NORM, IMI, ASMI, etc.) have numeric confidence 0-100.
+RHYTHM_STATEMENTS = {
+    "AFIB", "STACH", "PVC", "SBRAD", "AFLT", "SR", "SARRH",
+    "SVTAC", "PSVT", "TRIGU", "BIGU", "PACE", "SVARR",
+    "APTS", "VPTS",
+}
+
 
 def parse_scp_codes(scp_str: str) -> Dict[str, float]:
     """Parse the scp_codes string column into a Python dict."""
@@ -73,13 +81,16 @@ def build_label_matrix(
 
     for row_idx, codes in enumerate(scp):
         for code, confidence in codes.items():
-            # In PTB-XL, Rhythm and Form statements (like AFIB, STACH, SBRAD)
-            # are assigned a confidence of exactly 0.0, which means 'Present'.
-            # Only Diagnostic statements get non-zero confidence scores.
             if code in label_to_idx:
-                min_confidence = float(label_threshold_overrides.get(code, threshold))
-                if confidence >= min_confidence or confidence == 0.0:
+                if code in RHYTHM_STATEMENTS:
+                    # Rhythm/form statements: confidence=0.0 means "Present".
+                    # Any non-negative confidence means the label is active.
                     label_matrix[row_idx, label_to_idx[code]] = 1.0
+                else:
+                    # Diagnostic statements: apply confidence threshold.
+                    min_confidence = float(label_threshold_overrides.get(code, threshold))
+                    if confidence >= min_confidence:
+                        label_matrix[row_idx, label_to_idx[code]] = 1.0
 
     if normal_mode == "exclusive" and normal_label in label_to_idx:
         normal_idx = label_to_idx[normal_label]

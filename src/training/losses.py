@@ -6,7 +6,7 @@ Baseline: plain BCE, no pos_weight, no label smoothing.
 Incremental tricks (enable one at a time to measure impact):
   - use_focal    : replace BCE with Focal Loss (handles class imbalance)
   - pos_weight   : per-class positive weights for BCE
-  - label_smoothing : soft labels
+  - label_smoothing : soft labels (positive only — negatives stay 0 for pos_weight compat)
 """
 import torch
 import torch.nn as nn
@@ -92,7 +92,6 @@ class MultiTaskLoss(nn.Module):
         self.mi_pos_weight = mi_pos_weight
 
         if use_focal:
-            # Focal Loss replaces BCE — absorbs pos_weight implicitly via alpha
             self.arrhythmia_loss_fn = BinaryFocalLoss(
                 gamma=focal_gamma, alpha=focal_alpha,
                 pos_weight=arrhythmia_pos_weight,
@@ -101,6 +100,11 @@ class MultiTaskLoss(nn.Module):
                 gamma=focal_gamma, alpha=focal_alpha,
                 pos_weight=mi_pos_weight,
             )
+            # Pre-built per-label focal losses for IMI/ASMI split path
+            imi_pw = mi_pos_weight[0:1] if mi_pos_weight is not None else None
+            asmi_pw = mi_pos_weight[1:2] if mi_pos_weight is not None else None
+            self.imi_loss_fn = BinaryFocalLoss(gamma=focal_gamma, alpha=focal_alpha, pos_weight=imi_pw)
+            self.asmi_loss_fn = BinaryFocalLoss(gamma=focal_gamma, alpha=focal_alpha, pos_weight=asmi_pw)
         else:
             self.arrhythmia_loss_fn = nn.BCEWithLogitsLoss(
                 pos_weight=arrhythmia_pos_weight
@@ -108,30 +112,16 @@ class MultiTaskLoss(nn.Module):
             self.mi_loss_fn = nn.BCEWithLogitsLoss(
                 pos_weight=mi_pos_weight
             )
+            # Pre-built per-label BCE for IMI/ASMI split path
+            imi_pw = mi_pos_weight[0:1] if mi_pos_weight is not None else None
+            asmi_pw = mi_pos_weight[1:2] if mi_pos_weight is not None else None
+            self.imi_loss_fn = nn.BCEWithLogitsLoss(pos_weight=imi_pw)
+            self.asmi_loss_fn = nn.BCEWithLogitsLoss(pos_weight=asmi_pw)
+
         if hrv_loss_type == "mse":
             self.hrv_loss_fn = nn.MSELoss()
         else:
             self.hrv_loss_fn = nn.SmoothL1Loss(beta=0.5)
-
-    def _binary_loss(
-        self,
-        logits: torch.Tensor,
-        targets: torch.Tensor,
-        pos_weight: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if self.use_focal:
-            return BinaryFocalLoss(
-                gamma=self.focal_gamma,
-                alpha=self.focal_alpha,
-                pos_weight=pos_weight,
-            )(logits, targets)
-
-        return F.binary_cross_entropy_with_logits(
-            logits,
-            targets,
-            reduction="mean",
-            pos_weight=pos_weight,
-        )
 
     def forward(
         self,
@@ -148,12 +138,13 @@ class MultiTaskLoss(nn.Module):
         """
         losses = {}
 
-        # Apply label smoothing: y_smooth = y*(1-ε) + ε/2
-        # positive → 1 - ε/2,  negative → ε/2
+        # Label smoothing: only smooth positive labels (1→1-ε), keep negatives at 0.
+        # This preserves pos_weight effectiveness — pos_weight relies on negative
+        # targets being exactly 0 to correctly re-weight the positive class.
         if self.label_smoothing > 0.0:
             eps = self.label_smoothing
-            arrhy_targets = targets["arrhythmia"] * (1.0 - eps) + eps / 2.0
-            mi_targets    = targets["mi"]          * (1.0 - eps) + eps / 2.0
+            arrhy_targets = targets["arrhythmia"] * (1.0 - eps)
+            mi_targets    = targets["mi"]          * (1.0 - eps)
         else:
             arrhy_targets = targets["arrhythmia"]
             mi_targets    = targets["mi"]
@@ -165,21 +156,13 @@ class MultiTaskLoss(nn.Module):
 
         # MI loss: keep IMI and ASMI separate so we can prioritize IMI
         if preds["mi"].shape[1] == 2:
-            imi_pos_weight = None
-            asmi_pos_weight = None
-            if self.mi_pos_weight is not None:
-                imi_pos_weight = self.mi_pos_weight[0:1]
-                asmi_pos_weight = self.mi_pos_weight[1:2]
-
-            losses["imi"] = self._binary_loss(
+            losses["imi"] = self.imi_loss_fn(
                 preds["mi"][:, 0],
                 mi_targets[:, 0],
-                pos_weight=imi_pos_weight,
             )
-            losses["asmi"] = self._binary_loss(
+            losses["asmi"] = self.asmi_loss_fn(
                 preds["mi"][:, 1],
                 mi_targets[:, 1],
-                pos_weight=asmi_pos_weight,
             )
 
             mi_weight_sum = max(self.imi_weight + self.asmi_weight, 1e-8)
@@ -217,19 +200,3 @@ class MultiTaskLoss(nn.Module):
         )
 
         return losses
-
-
-def build_loss(cfg: dict) -> MultiTaskLoss:
-    """Build MultiTaskLoss from config dict (baseline, no pos_weight)."""
-    lw      = cfg.get("training", {}).get("loss_weights", {})
-    hrv_cfg = cfg.get("hrv", {})
-
-    return MultiTaskLoss(
-        arrhythmia_weight = lw.get("arrhythmia", 1.0),
-        mi_weight         = lw.get("mi",         1.0),
-        imi_weight        = lw.get("imi",        1.0),
-        asmi_weight       = lw.get("asmi",       1.0),
-        hrv_weight        = lw.get("hrv",        0.1),
-        hrv_enabled       = hrv_cfg.get("enabled", True),
-        hrv_loss_type     = cfg.get("training", {}).get("hrv_loss", "smooth_l1"),
-    )

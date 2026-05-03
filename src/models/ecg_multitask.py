@@ -129,6 +129,11 @@ class ECGMultiTaskModel(nn.Module):
       - shared backbone for rhythm/global context
       - anatomy-aware MI branch from raw signal + shared context
       - optional HRV regression branch
+
+    mi_gradient_scale (0.0-1.0): Controls how much MI loss gradient flows back
+    into the shared backbone. Lower values reduce gradient competition between
+    arrhythmia and MI tasks. MI head still receives full-resolution features
+    from its own LeadGroupEncoder (raw signal → inferior/reciprocal/anterior).
     """
 
     def __init__(
@@ -142,6 +147,7 @@ class ECGMultiTaskModel(nn.Module):
         mi_branch_dim: int,
         dropout: float,
         hrv_detach: bool = False,
+        mi_gradient_scale: float = 1.0,
     ) -> None:
         super().__init__()
         if num_mi_labels != 2:
@@ -150,6 +156,7 @@ class ECGMultiTaskModel(nn.Module):
         self.backbone = backbone
         self.hrv_enabled = hrv_enabled
         self.hrv_detach = hrv_detach
+        self.mi_gradient_scale = mi_gradient_scale
         shared_dim = backbone.output_dim
 
         self.arrhythmia_pool = TaskTokenPooling(shared_dim, dropout)
@@ -170,6 +177,15 @@ class ECGMultiTaskModel(nn.Module):
                 dropout=dropout,
             )
 
+    @staticmethod
+    def _scale_gradient(tensor: torch.Tensor, scale: float) -> torch.Tensor:
+        """Scale gradient flowing through tensor without affecting forward value.
+
+        During forward: returns tensor unchanged.
+        During backward: gradient is multiplied by `scale`.
+        """
+        return tensor * scale + tensor.detach() * (1.0 - scale)
+
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         backbone_out = self.backbone(x)
         global_features = backbone_out["global_features"]
@@ -179,9 +195,18 @@ class ECGMultiTaskModel(nn.Module):
         rhythm_features = torch.cat([global_features, arrhythmia_tokens], dim=-1)
         shared_features = global_features + pooled_sequence
 
+        # Gradient isolation: scale MI gradients flowing back into shared backbone
+        # MI head still gets full-resolution features from LeadGroupEncoder (raw signal)
+        if self.mi_gradient_scale < 1.0:
+            mi_shared = self._scale_gradient(shared_features, self.mi_gradient_scale)
+            mi_seq = self._scale_gradient(sequence_features, self.mi_gradient_scale)
+        else:
+            mi_shared = shared_features
+            mi_seq = sequence_features
+
         outputs = {
             "arrhythmia": self.arrhythmia_head(rhythm_features),
-            "mi": self.mi_head(x, shared_features, sequence_features),
+            "mi": self.mi_head(x, mi_shared, mi_seq),
         }
 
         if self.hrv_enabled:
@@ -191,3 +216,4 @@ class ECGMultiTaskModel(nn.Module):
             outputs["hrv"] = self.hrv_head(hrv_features)
 
         return outputs
+

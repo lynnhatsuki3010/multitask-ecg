@@ -770,9 +770,19 @@ def main():
 
     arrhy_pw, mi_pw = None, None
     if use_pos_weight:
-        print("\n► Building pos_weight tensors ...")
+        print("\n► Building pos_weight tensors (from train split only) ...")
+        # Compute pos_weight from TRAIN SPLIT only (not entire dataset)
+        # This correctly reflects class imbalance in the actual training data.
+        from src.data.label_builder import compute_pos_weights
+        train_label_matrix = data["label_matrix"][data["splits"]["train"]]
+        raw_pw = compute_pos_weights(train_label_matrix)
+        train_pos_weights = {name: float(w) for name, w in zip(label_names, raw_pw)}
+        print(f"  Train split pos_weights (raw):")
+        for name, w in train_pos_weights.items():
+            print(f"    {name}: {w:.3f}")
+
         arrhy_pw, mi_pw = build_pos_weight_tensors(
-            data["pos_weights"],
+            train_pos_weights,
             arrhy_names,
             mi_names,
             device,

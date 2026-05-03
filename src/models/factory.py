@@ -7,7 +7,6 @@ from typing import List
 
 from src.models.backbones import CNNBackbone, HybridTransformerBackbone
 from src.models.ecg_multitask import ECGMultiTaskModel
-from src.models.phased_multitask_transformer import PhasedMultitaskTransformer
 
 
 def _parse_stage_dims(model_cfg: dict, d_model: int) -> List[int]:
@@ -51,35 +50,16 @@ def build_model(
             dim_feedforward=int(model_cfg.get("dim_feedforward", d_model * 2)),
             dropout=dropout,
         )
-    elif architecture == "phased_multitask_transformer":
-        hrv_enabled = bool(cfg.get("hrv", {}).get("enabled", True))
-        return PhasedMultitaskTransformer(
-            num_leads=cfg["dataset"]["num_leads"],
-            num_arrhythmia_labels=num_arrhythmia_labels,
-            num_mi_labels=num_mi_labels,
-            hrv_enabled=hrv_enabled,
-            num_hrv_targets=num_hrv_targets,
-            d_model=d_model,
-            stem_dim=stem_dim,
-            stage_dims=_parse_stage_dims(model_cfg, d_model),
-            downsample_factor=downsample_factor,
-            nhead=int(model_cfg.get("nhead", 8)),
-            num_encoder_layers=int(model_cfg.get("num_encoder_layers", 4)),
-            dim_feedforward=int(model_cfg.get("dim_feedforward", d_model * 2)),
-            head_hidden_dim=int(model_cfg.get("head_hidden_dim", d_model // 2)),
-            mi_branch_dim=int(model_cfg.get("mi_branch_dim", 128)),
-            dropout=dropout,
-            hrv_detach=bool(model_cfg.get("hrv_detach", False)),
-        )
     else:
         raise ValueError(
             f"Unsupported model.architecture='{architecture}'. "
-            "Use 'cnn', 'hybrid_transformer', or 'phased_multitask_transformer'."
+            "Use 'cnn' or 'hybrid_transformer'."
         )
 
     head_hidden_dim = int(model_cfg.get("head_hidden_dim", d_model // 2))
     mi_branch_dim = int(model_cfg.get("mi_branch_dim", 128))
     hrv_enabled = bool(cfg.get("hrv", {}).get("enabled", True))
+    mi_gradient_scale = float(model_cfg.get("mi_gradient_scale", 1.0))
 
     return ECGMultiTaskModel(
         backbone=backbone,
@@ -91,4 +71,5 @@ def build_model(
         mi_branch_dim=mi_branch_dim,
         dropout=dropout,
         hrv_detach=bool(model_cfg.get("hrv_detach", False)),
+        mi_gradient_scale=mi_gradient_scale,
     )

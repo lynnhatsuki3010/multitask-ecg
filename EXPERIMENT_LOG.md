@@ -97,12 +97,21 @@ training:
 - `configs/hybrid_transformer_baseline.yaml` — added mi_gradient_scale default
 
 ### Results (After Training)
-_To be filled after training run_
+_Run: run_20260503_112137_hybrid-tf_
 
-| Metric | E-01 | E-02 | Delta |
-|--------|------|------|-------|
-| IMI AUROC | 0.940 | | |
-| IMI AUPRC | 0.511 | | |
-| IMI F1 | 0.489 | | |
-| ASMI F1 | 0.743 | | |
-| Arrhy F1 | 0.751 | | |
+| Metric | E-01 Baseline | E-02 Results | Delta |
+|--------|---------------|--------------|-------|
+| IMI AUROC | 0.940 | **0.950** | `+0.010` 📈 |
+| IMI AUPRC | 0.511 | **0.512** | `+0.001` 📈 |
+| IMI F1 (untuned)| 0.489 | **0.494** | `+0.005` 📈 |
+| ASMI F1 (untuned)| 0.743 | 0.728 | `-0.015` 📉 |
+| Arrhy macro F1 | 0.751 | **0.768** | `+0.017` 📈 |
+| Arrhy macro AUROC| 0.968 | **0.984** | `+0.016` 📈 |
+
+**Phân tích kết quả:**
+1. **Arrhythmia bứt phá mạnh**: F1 vọt lên 0.768 và AUROC đạt 0.984 (cực kỳ tốt). Việc tách biệt Gradient Isolation đã giúp backbone không bị "kẹt" ở cục bộ, cùng với Cosine Restart scheduler giúp các nhãn Arrhythmia có cơ hội thoát khỏi minimum cục bộ tốt hơn.
+2. **IMI có cải thiện nhưng vẫn bị chững (Precision Bottleneck)**:
+   - AUROC tăng lên 0.950, tức là khả năng phân biệt âm/dương của IMI đang rất tốt.
+   - Recall của IMI cực cao (0.81) nhưng Precision bị kẹt ở mức thấp (0.355). Điều này cho thấy mô hình đang "overpredict" IMI (dự đoán dương tính giả nhiều) dẫn đến F1 và AUPRC không thể tăng mạnh. 
+   - Nguyên nhân chính: Label IMI rất dễ bị lẫn với một số đặc điểm repolarization bình thường hoặc nhiễu.
+3. **Differential LR hoạt động đúng thiết kế**: MI Head train độc lập tốt hơn nên các metric phân biệt (AUROC) đều tốt, nhưng bài toán mất cân bằng class vẫn tác động lên Precision của IMI.

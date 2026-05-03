@@ -1,7 +1,7 @@
 """
 02_train.py
 ─────────────────────────────────────────────────────────────────
-Step 2: Train the multi-task ECG Transformer.
+Step 2: Train the ECG multi-task model.
 
 Requires 01_build_metadata.py to have been run first.
 
@@ -30,11 +30,16 @@ matplotlib.use("Agg")   # non-interactive backend (no display needed)
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Subset
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.preprocessing import PTBXLDataset, collate_fn
-from src.models.ecg_transformer import ECGTransformer
-from src.models.multitask_head import MultiTaskECGModel
+from src.data.policy import audit_dataset_policy
+from src.models.factory import build_model
 from src.training.losses import MultiTaskLoss
 from src.training.trainer import Trainer
 
@@ -237,8 +242,9 @@ def plot_confusion_matrices(
 # ─── Args ─────────────────────────────────────────────────────────────────────
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Train Multi-Task ECG Transformer")
+    p = argparse.ArgumentParser(description="Train ECG multi-task model")
     p.add_argument("--config",     default="configs/config.yaml")
+    p.add_argument("--architecture", choices=["cnn", "hybrid_transformer"], default=None, help="Override model architecture from config")
     p.add_argument("--no-hrv",     action="store_true", help="Disable HRV regression task")
     p.add_argument("--epochs",     type=int,   default=None)
     p.add_argument("--batch-size", type=int,   default=None)
@@ -258,6 +264,18 @@ def parse_args():
     p.add_argument("--no-pos-weight",     action="store_true", help="Disable pos_weight (use with --use-focal)")
     p.add_argument("--focal-gamma",       type=float, default=None, help="Focal Loss gamma (default: 2.0)")
     p.add_argument("--weighted-sampler",  action="store_true", default=None, help="[Phase B2] WeightedRandomSampler — oversample minority classes in each batch")
+    p.add_argument("--split-method",      default=None, help="Override dataset.split_method from config for audit/reproducibility")
+    p.add_argument("--split-seed",        type=int, default=None, help="Override dataset.split_seed from config for audit/reproducibility")
+    p.add_argument("--split-group-key",   default=None, help="Override dataset.split_group_key from config for audit/reproducibility")
+    p.add_argument("--split-train-ratio", type=float, default=None, help="Override dataset.split_train_ratio from config for audit/reproducibility")
+    p.add_argument("--split-val-ratio",   type=float, default=None, help="Override dataset.split_val_ratio from config for audit/reproducibility")
+    p.add_argument("--split-test-ratio",  type=float, default=None, help="Override dataset.split_test_ratio from config for audit/reproducibility")
+    p.add_argument("--test-fold",         type=int, default=None, help="Override dataset.test_fold from config for audit/reproducibility")
+    p.add_argument("--val-fold",          type=int, default=None, help="Override dataset.val_fold from config for audit/reproducibility")
+    p.add_argument("--split-num-folds",   type=int, default=None, help="Override dataset.split_num_folds from config for audit/reproducibility")
+    p.add_argument("--split-test-fold-index", type=int, default=None, help="Override dataset.split_test_fold_index from config for audit/reproducibility")
+    p.add_argument("--split-val-fold-index", type=int, default=None, help="Override dataset.split_val_fold_index from config for audit/reproducibility")
+    p.add_argument("--split-stratify-label", default=None, help="Override dataset.split_stratify_label from config for audit/reproducibility")
     return p.parse_args()
 
 
@@ -266,6 +284,35 @@ def parse_args():
 def load_config(path: str) -> dict:
     with open(path, "r") as f:
         return yaml.safe_load(f)
+
+
+def apply_dataset_cli_overrides(cfg: dict, args) -> dict:
+    dataset_cfg = cfg.setdefault("dataset", {})
+    overrides = {
+        "split_method": args.split_method,
+        "split_seed": args.split_seed,
+        "split_group_key": args.split_group_key,
+        "split_train_ratio": args.split_train_ratio,
+        "split_val_ratio": args.split_val_ratio,
+        "split_test_ratio": args.split_test_ratio,
+        "test_fold": args.test_fold,
+        "val_fold": args.val_fold,
+        "split_num_folds": args.split_num_folds,
+        "split_test_fold_index": args.split_test_fold_index,
+        "split_val_fold_index": args.split_val_fold_index,
+        "split_stratify_label": args.split_stratify_label,
+    }
+    for key, value in overrides.items():
+        if value is not None:
+            dataset_cfg[key] = value
+    return cfg
+
+
+def load_checkpoint(path: str, map_location):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
 
 
 def set_seed(seed: int):
@@ -328,6 +375,7 @@ def load_splits_and_data(cfg: dict, args) -> dict:
         "hrv_matrix":   hrv_matrix,
         "pos_weights":  pos_weights,
         "splits":       split_indices,
+        "processed_path": processed,
     }
 
 
@@ -476,6 +524,7 @@ def build_pos_weight_tensors(
     mi_names: list,
     device: torch.device,
     max_weight: float = 50.0,
+    power: float = 1.0,
 ) -> tuple:
     """
     Build pos_weight tensors for BCEWithLogitsLoss from pos_weights.json.
@@ -486,7 +535,11 @@ def build_pos_weight_tensors(
         (arrhy_pw_tensor, mi_pw_tensor)  — both on `device`
     """
     def _build(names):
-        weights = [min(pos_weights.get(n, 1.0), max_weight) for n in names]
+        weights = []
+        for n in names:
+            raw_weight = float(pos_weights.get(n, 1.0))
+            adjusted_weight = min(max(raw_weight, 1.0) ** power, max_weight)
+            weights.append(adjusted_weight)
         return torch.tensor(weights, dtype=torch.float32, device=device)
 
     arrhy_pw = _build(arrhy_names)
@@ -537,12 +590,36 @@ def normalize_hrv(
     return hrv_matrix_norm, stats
 
 
+def audit_and_save_dataset_policy(cfg: dict, data: dict, run_dir: str) -> None:
+    report = audit_dataset_policy(
+        cfg,
+        data["processed_path"],
+        metadata_columns=list(data["df"].columns),
+    )
+    report_path = os.path.join(run_dir, "dataset_policy_audit.json")
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
+    print("\n► Dataset policy audit ...")
+    if report["warnings"]:
+        for warning in report["warnings"]:
+            print(f"  [warn] {warning}")
+    if report["errors"]:
+        for error in report["errors"]:
+            print(f"  [error] {error}")
+        raise ValueError(
+            "Dataset policy audit failed. Rebuild metadata or align config before training."
+        )
+    print(f"  Audit passed → {report_path}")
+
+
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     args = parse_args()
     cfg  = load_config(args.config)
+    cfg  = apply_dataset_cli_overrides(cfg, args)
 
     # Overrides from CLI
     if args.epochs:
@@ -551,6 +628,8 @@ def main():
         cfg["training"]["batch_size"] = args.batch_size
     if args.lr:
         cfg["training"]["lr"] = args.lr
+    if args.architecture:
+        cfg.setdefault("model", {})["architecture"] = args.architecture
     if args.seed is not None:
         cfg["training"]["seed"] = args.seed
     if args.no_hrv:
@@ -591,13 +670,15 @@ def main():
     fs = cfg["dataset"]["sampling_rate"]
 
     print(f"\n{'='*60}")
-    print("  ECG Multi-Task Transformer — Training")
+    print("  ECG Multi-Task Training")
     print(f"{'='*60}\n")
 
     # ── Create timestamped run directory ──────────────────────────────────────
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     # Encode active flags in the folder name for quick identification
     tag_parts = []
+    architecture = cfg.get("model", {}).get("architecture", "hybrid_transformer")
+    tag_parts.append(architecture.replace("_transformer", "-tf"))
     if cfg["training"].get("use_focal"):        tag_parts.append("focal")
     if cfg["training"].get("weighted_sampler"): tag_parts.append("wrs")
     aug_cfg = cfg.get("augmentation", {})
@@ -618,12 +699,12 @@ def main():
     cfg_snapshot_path = os.path.join(run_dir, "config_snapshot.yaml")
     with open(cfg_snapshot_path, "w") as f:
         yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
-
     print(f"  Run directory : {run_dir}")
 
     # ── Load data ─────────────────────────────────────────────────────────────
     print("► Loading preprocessed data ...")
     data = load_splits_and_data(cfg, args)
+    audit_and_save_dataset_policy(cfg, data, run_dir)
 
     # ── Build label index lists ───────────────────────────────────────────────
     label_cfgs     = cfg["labels"]
@@ -657,28 +738,13 @@ def main():
     # ── Model ─────────────────────────────────────────────────────────────────
     print("\n► Building model ...")
     model_cfg = cfg["model"]
-    backbone = ECGTransformer(
-        num_leads          = cfg["dataset"]["num_leads"],
-        signal_length      = cfg["dataset"]["signal_length"],
-        patch_size         = model_cfg["patch_size"],
-        d_model            = model_cfg["d_model"],
-        nhead              = model_cfg["nhead"],
-        num_encoder_layers = model_cfg["num_encoder_layers"],
-        dim_feedforward    = model_cfg["dim_feedforward"],
-        dropout            = model_cfg["dropout"],
-        fs                 = fs,
+    model = build_model(
+        cfg=cfg,
+        num_arrhythmia_labels=len(arrhy_indices),
+        num_mi_labels=len(mi_indices),
+        num_hrv_targets=len(hrv_features),
     )
-    model = MultiTaskECGModel(
-        backbone               = backbone,
-        d_model                = model_cfg["d_model"],
-        num_arrhythmia_labels  = len(arrhy_indices),
-        num_mi_labels          = len(mi_indices),
-        hrv_enabled            = hrv_enabled,
-        num_hrv_targets        = len(hrv_features),
-        head_hidden_dim        = model_cfg["dim_feedforward"] // 4,
-        dropout                = model_cfg["dropout"],
-        fs                     = fs,
-    )
+    print(f"  Architecture: {model_cfg.get('architecture', 'hybrid_transformer')}")
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Trainable parameters: {total_params:,}")
@@ -686,7 +752,7 @@ def main():
     # ── Resume checkpoint ─────────────────────────────────────────────────────
     if args.resume:
         print(f"\n► Resuming from: {args.resume}")
-        ckpt = torch.load(args.resume, map_location="cpu")
+        ckpt = load_checkpoint(args.resume, map_location="cpu")
         model.load_state_dict(ckpt["model"])
         print(f"  Resumed from epoch {ckpt['epoch']}")
 
@@ -698,22 +764,35 @@ def main():
     focal_gamma    = cfg["training"].get("focal_gamma",    2.0)
     focal_alpha    = cfg["training"].get("focal_alpha",    0.25)
     smoothing      = cfg["training"].get("label_smoothing", 0.0)
+    hrv_loss       = cfg["training"].get("hrv_loss", "smooth_l1")
+    max_pos_weight = float(cfg["training"].get("max_pos_weight", 50.0))
+    pos_weight_power = float(cfg["training"].get("pos_weight_power", 1.0))
 
     arrhy_pw, mi_pw = None, None
     if use_pos_weight:
         print("\n► Building pos_weight tensors ...")
         arrhy_pw, mi_pw = build_pos_weight_tensors(
-            data["pos_weights"], arrhy_names, mi_names, device
+            data["pos_weights"],
+            arrhy_names,
+            mi_names,
+            device,
+            max_weight=max_pos_weight,
+            power=pos_weight_power,
         )
     else:
         print("\n► pos_weight disabled (use_pos_weight=false)")
 
     print(f"  use_focal: {use_focal}  focal_gamma: {focal_gamma}  focal_alpha: {focal_alpha}")
-    print(f"  label_smoothing: {smoothing}")
+    print(
+        f"  label_smoothing: {smoothing}  hrv_loss: {hrv_loss}  "
+        f"max_pos_weight: {max_pos_weight}  pos_weight_power: {pos_weight_power}"
+    )
 
     loss_fn = MultiTaskLoss(
         arrhythmia_weight     = lw.get("arrhythmia", 1.0),
         mi_weight             = lw.get("mi",         1.0),
+        imi_weight            = lw.get("imi",        1.0),
+        asmi_weight           = lw.get("asmi",       1.0),
         hrv_weight            = lw.get("hrv",        0.1),
         hrv_enabled           = hrv_enabled,
         arrhythmia_pos_weight = arrhy_pw,
@@ -722,6 +801,7 @@ def main():
         focal_gamma           = focal_gamma,
         focal_alpha           = focal_alpha,
         label_smoothing       = smoothing,
+        hrv_loss_type         = hrv_loss,
     )
 
     # ── Trainer ───────────────────────────────────────────────────────────────
@@ -746,7 +826,7 @@ def main():
     print("\n► Loading best model for test evaluation ...")
     best_ckpt = os.path.join(cfg["paths"]["checkpoints"], "best_model.pth")
     if os.path.exists(best_ckpt):
-        ckpt = torch.load(best_ckpt, map_location=device)
+        ckpt = load_checkpoint(best_ckpt, map_location=device)
         model.load_state_dict(ckpt["model"])
         print("  Loaded best_model.pth")
     else:

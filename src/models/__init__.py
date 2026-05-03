@@ -1,2 +1,3 @@
-from src.models.ecg_transformer import ECGTransformer
-from src.models.multitask_head import MultiTaskECGModel
+from src.models.backbones import CNNBackbone, HybridTransformerBackbone
+from src.models.ecg_multitask import ECGMultiTaskModel
+from src.models.factory import build_model

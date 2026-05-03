@@ -94,6 +94,8 @@ class Trainer:
         self.mi_label_names = mi_label_names
         self.hrv_feature_names = hrv_feature_names
         self.hrv_enabled = cfg.get("hrv", {}).get("enabled", True)
+        eval_cfg = cfg.get("eval", {})
+        self.val_tune_thresholds_every = int(eval_cfg.get("val_tune_thresholds_every", 0))
 
         train_cfg = cfg.get("training", {})
         self.update_weights    = update_weights
@@ -101,6 +103,7 @@ class Trainer:
         self.threshold = cfg.get("eval", {}).get("threshold", 0.5)
         self.save_every = train_cfg.get("save_every", 5)
         self.patience   = train_cfg.get("early_stopping_patience", 10)
+        self.monitor_metric = train_cfg.get("monitor_metric", "macro_f1")
         self.checkpoint_dir = cfg.get("paths", {}).get("checkpoints", "checkpoints")
 
         # ── Optimizer — AdamW with differential weight decay ─────────────────────
@@ -185,8 +188,57 @@ class Trainer:
 
         # History
         self.history: Dict[str, list] = {"train": [], "val": []}
-        self.best_val_auroc = -1.0
+        self.best_monitor_value = -1.0
         self.no_improve_count = 0
+
+        _tuned_metrics = ("imi_f1_tuned", "macro_f1_tuned", "mi_macro_f1_tuned")
+        if self.monitor_metric in _tuned_metrics and self.val_tune_thresholds_every <= 0:
+            raise ValueError(
+                f"training.monitor_metric='{self.monitor_metric}' requires "
+                "eval.val_tune_thresholds_every > 0 (per-class threshold search on val each N epochs)."
+            )
+
+    MONITOR_ALIASES = {
+        "mean_auroc": ["auroc/arrhy/macro", "auroc/mi/macro"],
+        "macro_f1": ["f1/arrhy/macro", "f1/mi/macro"],
+        "arrhythmia_f1": ["f1/arrhy/macro"],
+        "mi_f1": ["f1/mi/macro"],
+        "imi_f1": ["f1/mi/IMI"],
+        "imi_auroc": ["auroc/mi/IMI"],
+        "imi_auprc": ["auprc/mi/IMI"],
+        "asmi_f1": ["f1/mi/ASMI"],
+        "asmi_auroc": ["auroc/mi/ASMI"],
+        "asmi_auprc": ["auprc/mi/ASMI"],
+        # Val metrics after per-class threshold search (requires eval.val_tune_thresholds_every > 0)
+        "imi_f1_tuned": ["tuned/f1/mi/IMI"],
+        "macro_f1_tuned": ["tuned/f1/arrhy/macro", "tuned/f1/mi/macro"],
+        "mi_macro_f1_tuned": ["tuned/f1/mi/macro"],
+    }
+
+    def _compute_monitor_value(self, metrics: Dict[str, Union[float, str]]) -> float:
+        metric_keys = self.MONITOR_ALIASES.get(self.monitor_metric, None)
+        if metric_keys is None:
+            metric_keys = [self.monitor_metric]
+        values = [metrics.get(key, float("nan")) for key in metric_keys]
+        return float(np.nanmean(values))
+
+    def _monitor_label(self) -> str:
+        friendly = {
+            "mean_auroc": "mean AUROC",
+            "macro_f1": "mean macro F1",
+            "arrhythmia_f1": "arrhythmia macro F1",
+            "mi_f1": "MI macro F1",
+            "imi_f1": "IMI F1",
+            "imi_auroc": "IMI AUROC",
+            "imi_auprc": "IMI AUPRC",
+            "asmi_f1": "ASMI F1",
+            "asmi_auroc": "ASMI AUROC",
+            "asmi_auprc": "ASMI AUPRC",
+            "imi_f1_tuned": "IMI F1 (val tuned thresholds)",
+            "macro_f1_tuned": "mean macro F1 (val tuned thresholds)",
+            "mi_macro_f1_tuned": "MI macro F1 (val tuned thresholds)",
+        }
+        return friendly.get(self.monitor_metric, self.monitor_metric)
 
     # ── Split labels ──────────────────────────────────────────────────────────
 
@@ -275,6 +327,7 @@ class Trainer:
         print(f"  Starting training: {self.epochs} epochs  {mode_label}")
         print(f"  Device: {self.device}")
         print(f"  Train batches: {len(self.train_loader)} | Val batches: {len(self.val_loader)}")
+        print(f"  Monitoring: {self._monitor_label()}")
         print(f"{'='*60}\n")
 
         for epoch in range(1, self.epochs + 1):
@@ -282,6 +335,15 @@ class Trainer:
 
             train_metrics = self._run_epoch(self.train_loader, train=True)
             val_metrics   = self._run_epoch(self.val_loader,   train=False)
+
+            # Optional: val metrics with per-class thresholds (aligns with post-train test protocol)
+            tune_every = self.val_tune_thresholds_every
+            if tune_every > 0 and epoch % tune_every == 0:
+                thr = self.find_thresholds(self.val_loader, verbose=False)
+                tuned = self._run_epoch_with_thresholds(self.val_loader, thr)
+                for k, v in tuned.items():
+                    if isinstance(v, float):
+                        val_metrics[f"tuned/{k}"] = v
 
             # Epoch-level scheduler step (skip for OneCycleLR — already stepped per batch)
             if self.scheduler is not None and not getattr(self, "_step_scheduler_per_batch", False):
@@ -296,38 +358,53 @@ class Trainer:
             val_loss   = val_metrics.get("loss/total",   float("nan"))
             val_auroc_arrhy = val_metrics.get("auroc/arrhy/macro", float("nan"))
             val_auroc_mi    = val_metrics.get("auroc/mi/macro",    float("nan"))
+            val_f1_arrhy    = val_metrics.get("f1/arrhy/macro",    float("nan"))
+            val_f1_mi       = val_metrics.get("f1/mi/macro",       float("nan"))
+            val_f1_imi      = val_metrics.get("f1/mi/IMI",         float("nan"))
+            val_auprc_imi   = val_metrics.get("auprc/mi/IMI",      float("nan"))
+            val_f1_imi_t    = val_metrics.get("tuned/f1/mi/IMI",    float("nan"))
+
+            extra = ""
+            if tune_every > 0 and epoch % tune_every == 0 and not np.isnan(val_f1_imi_t):
+                extra = f" | imi_f1_tuned={val_f1_imi_t:.4f}"
 
             print(
                 f"Epoch [{epoch:3d}/{self.epochs}] "
                 f"| train_loss={train_loss:.4f} "
                 f"| val_loss={val_loss:.4f} "
+                f"| arrhy_f1={val_f1_arrhy:.4f} "
+                f"| mi_f1={val_f1_mi:.4f} "
+                f"| imi_f1={val_f1_imi:.4f} "
+                f"| imi_auprc={val_auprc_imi:.4f} "
                 f"| arrhy_auroc={val_auroc_arrhy:.4f} "
                 f"| mi_auroc={val_auroc_mi:.4f} "
+                f"{extra}"
                 f"| {elapsed:.1f}s"
             )
 
             # Best model checkpoint
-            val_auroc = float(np.nanmean([val_auroc_arrhy, val_auroc_mi]))
+            monitor_value = self._compute_monitor_value(val_metrics)
+            monitor_label = self._monitor_label()
 
             # ── Optuna Pruning Hook ──────────────────────────────────────────
             if self.optuna_trial is not None:
                 import optuna
-                self.optuna_trial.report(val_auroc, epoch)
+                self.optuna_trial.report(monitor_value, epoch)
                 if self.optuna_trial.should_prune():
                     print(f"  [Optuna Pruned] Trial cut short at epoch {epoch}")
                     raise optuna.TrialPruned()
 
-            if val_auroc > self.best_val_auroc:
-                self.best_val_auroc = val_auroc
+            if monitor_value > self.best_monitor_value:
+                self.best_monitor_value = monitor_value
                 self.no_improve_count = 0
                 if self.checkpoint_dir:
                     save_checkpoint(
                         self.model, self.optimizer, epoch, val_metrics,
                         os.path.join(self.checkpoint_dir, "best_model.pth"),
                     )
-                    print(f"  ✓ New best AUROC: {val_auroc:.4f} → saved best_model.pth")
+                    print(f"  ✓ New best {monitor_label}: {monitor_value:.4f} → saved best_model.pth")
                 else:
-                    print(f"  ✓ New best AUROC: {val_auroc:.4f}")
+                    print(f"  ✓ New best {monitor_label}: {monitor_value:.4f}")
             else:
                 self.no_improve_count += 1
 
@@ -340,7 +417,10 @@ class Trainer:
 
             # Early stopping
             if self.no_improve_count >= self.patience:
-                print(f"\n⚠ Early stopping at epoch {epoch} (no improvement for {self.patience} epochs)")
+                print(
+                    f"\nEarly stopping at epoch {epoch} "
+                    f"(no improvement in {self._monitor_label()} for {self.patience} epochs)"
+                )
                 break
 
         # Save training history
@@ -349,18 +429,23 @@ class Trainer:
             with open(os.path.join(self.checkpoint_dir, "history.json"), "w") as f:
                 json.dump(self.history, f, indent=2)
             print(f"\n{'='*60}")
-            print(f"  Training complete. Best val AUROC: {self.best_val_auroc:.4f}")
+            print(f"  Training complete. Best {self._monitor_label()}: {self.best_monitor_value:.4f}")
             print(f"  History saved to {self.checkpoint_dir}/history.json")
             print(f"{'='*60}\n")
         else:
             print(f"\n{'='*60}")
-            print(f"  Training complete. Best val AUROC: {self.best_val_auroc:.4f}")
+            print(f"  Training complete. Best {self._monitor_label()}: {self.best_monitor_value:.4f}")
             print(f"{'='*60}\n")
 
-    def find_thresholds(self, loader: Optional[DataLoader] = None) -> Dict[str, float]:
+    def find_thresholds(
+        self,
+        loader: Optional[DataLoader] = None,
+        verbose: bool = True,
+    ) -> Dict[str, float]:
         """
         Run inference on loader (defaults to val_loader), collect scores,
-        and find per-class threshold that maximises F1 for each label.
+        and find per-class threshold that maximises F_beta for each label
+        (see eval.threshold_search.class_beta).
 
         Returns:
             dict  label_name → optimal threshold, e.g. {'NORM': 0.45, 'AFIB': 0.25, ...}
@@ -389,16 +474,42 @@ class Trainer:
         mi_score = np.concatenate(mi_scores)
         mi_true  = np.concatenate(mi_trues)
 
-        arrhy_t = find_optimal_thresholds(a_true,  a_score,  self.arrhythmia_label_names)
-        # MI: standard F1 optimization (beta=1.0) gives balanced precision/recall
-        # F_beta=0.5 was overcorrecting, driving recall too low
-        mi_t    = find_optimal_thresholds(mi_true, mi_score, self.mi_label_names)
+        threshold_cfg = self.cfg.get("eval", {}).get("threshold_search", {})
+        global_floor  = float(threshold_cfg.get("min_threshold", 0.1))
+        rare_cap      = float(threshold_cfg.get("max_rare_threshold", 0.4))
+        min_pos_count = int(threshold_cfg.get("min_pos_count", 20))
+        class_beta    = threshold_cfg.get("class_beta", {})   # e.g. {SBRAD: 2.0, IMI: 1.5}
+        arrhy_t = find_optimal_thresholds(
+            a_true,
+            a_score,
+            self.arrhythmia_label_names,
+            min_pos_count=min_pos_count,
+            max_rare_threshold=rare_cap,
+            min_threshold=global_floor,
+            class_beta=class_beta,
+            class_min_threshold=threshold_cfg.get("arrhythmia_min_threshold", {}),
+            class_min_precision=threshold_cfg.get("arrhythmia_min_precision", {}),
+            class_max_threshold=threshold_cfg.get("arrhythmia_max_threshold", {}),
+        )
+        mi_t = find_optimal_thresholds(
+            mi_true,
+            mi_score,
+            self.mi_label_names,
+            min_pos_count=min_pos_count,
+            max_rare_threshold=rare_cap,
+            min_threshold=global_floor,
+            class_beta=class_beta,
+            class_min_threshold=threshold_cfg.get("mi_min_threshold", {}),
+            class_min_precision=threshold_cfg.get("mi_min_precision", {}),
+            class_max_threshold=threshold_cfg.get("mi_max_threshold", {}),
+        )
 
         thresholds = {**arrhy_t, **mi_t}
 
-        print("\n  Optimal thresholds (val F1-max):")
-        for name, t in thresholds.items():
-            print(f"    {name}: {t:.2f}")
+        if verbose:
+            print("\n  Optimal thresholds (val set, F_beta sweep):")
+            for name, t in thresholds.items():
+                print(f"    {name}: {t:.2f}")
 
         return thresholds
 
@@ -433,7 +544,7 @@ class Trainer:
         a_scores, a_trues = [], []
         mi_scores, mi_trues = [], []
         hrv_preds, hrv_trues = [], []
-        losses = {"total": [], "arrhythmia": [], "mi": [], "hrv": []}
+        losses = {"total": [], "arrhythmia": [], "mi": [], "imi": [], "asmi": [], "hrv": []}
 
         with torch.no_grad():
             for batch in loader:

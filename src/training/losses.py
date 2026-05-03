@@ -63,6 +63,8 @@ class MultiTaskLoss(nn.Module):
         self,
         arrhythmia_weight: float = 1.0,
         mi_weight: float = 1.0,
+        imi_weight: float = 1.0,
+        asmi_weight: float = 1.0,
         hrv_weight: float = 0.1,
         hrv_enabled: bool = True,
         # ── Class imbalance tricks ──────────────────────────────────────────
@@ -73,13 +75,21 @@ class MultiTaskLoss(nn.Module):
         focal_alpha: float = 0.25,
         # ── Regularization tricks ───────────────────────────────────────────
         label_smoothing: float = 0.0,
+        hrv_loss_type: str = "smooth_l1",
     ):
         super().__init__()
         self.arrhythmia_weight = arrhythmia_weight
         self.mi_weight = mi_weight
+        self.imi_weight = imi_weight
+        self.asmi_weight = asmi_weight
         self.hrv_weight = hrv_weight
         self.hrv_enabled = hrv_enabled
         self.label_smoothing = label_smoothing
+        self.use_focal = use_focal
+        self.focal_gamma = focal_gamma
+        self.focal_alpha = focal_alpha
+        self.arrhythmia_pos_weight = arrhythmia_pos_weight
+        self.mi_pos_weight = mi_pos_weight
 
         if use_focal:
             # Focal Loss replaces BCE — absorbs pos_weight implicitly via alpha
@@ -98,8 +108,30 @@ class MultiTaskLoss(nn.Module):
             self.mi_loss_fn = nn.BCEWithLogitsLoss(
                 pos_weight=mi_pos_weight
             )
-        # Plain MSE for HRV regression
-        self.hrv_loss_fn = nn.MSELoss()
+        if hrv_loss_type == "mse":
+            self.hrv_loss_fn = nn.MSELoss()
+        else:
+            self.hrv_loss_fn = nn.SmoothL1Loss(beta=0.5)
+
+    def _binary_loss(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        pos_weight: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.use_focal:
+            return BinaryFocalLoss(
+                gamma=self.focal_gamma,
+                alpha=self.focal_alpha,
+                pos_weight=pos_weight,
+            )(logits, targets)
+
+        return F.binary_cross_entropy_with_logits(
+            logits,
+            targets,
+            reduction="mean",
+            pos_weight=pos_weight,
+        )
 
     def forward(
         self,
@@ -131,10 +163,36 @@ class MultiTaskLoss(nn.Module):
             preds["arrhythmia"], arrhy_targets
         )
 
-        # MI loss
-        losses["mi"] = self.mi_loss_fn(
-            preds["mi"], mi_targets
-        )
+        # MI loss: keep IMI and ASMI separate so we can prioritize IMI
+        if preds["mi"].shape[1] == 2:
+            imi_pos_weight = None
+            asmi_pos_weight = None
+            if self.mi_pos_weight is not None:
+                imi_pos_weight = self.mi_pos_weight[0:1]
+                asmi_pos_weight = self.mi_pos_weight[1:2]
+
+            losses["imi"] = self._binary_loss(
+                preds["mi"][:, 0],
+                mi_targets[:, 0],
+                pos_weight=imi_pos_weight,
+            )
+            losses["asmi"] = self._binary_loss(
+                preds["mi"][:, 1],
+                mi_targets[:, 1],
+                pos_weight=asmi_pos_weight,
+            )
+
+            mi_weight_sum = max(self.imi_weight + self.asmi_weight, 1e-8)
+            losses["mi"] = (
+                self.imi_weight * losses["imi"]
+                + self.asmi_weight * losses["asmi"]
+            ) / mi_weight_sum
+        else:
+            losses["mi"] = self.mi_loss_fn(
+                preds["mi"], mi_targets
+            )
+            losses["imi"] = losses["mi"]
+            losses["asmi"] = losses["mi"]
 
         # HRV loss — masked MSE (only valid samples, i.e. R-peaks >= 3)
         if self.hrv_enabled and "hrv" in preds and "hrv" in targets:
@@ -169,6 +227,9 @@ def build_loss(cfg: dict) -> MultiTaskLoss:
     return MultiTaskLoss(
         arrhythmia_weight = lw.get("arrhythmia", 1.0),
         mi_weight         = lw.get("mi",         1.0),
+        imi_weight        = lw.get("imi",        1.0),
+        asmi_weight       = lw.get("asmi",       1.0),
         hrv_weight        = lw.get("hrv",        0.1),
         hrv_enabled       = hrv_cfg.get("enabled", True),
+        hrv_loss_type     = cfg.get("training", {}).get("hrv_loss", "smooth_l1"),
     )

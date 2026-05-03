@@ -9,13 +9,14 @@ from typing import List, Dict, Tuple
 
 
 # ─── Default 7-label configuration ──────────────────────────────────────────
-DEFAULT_LABELS = ["NORM", "AFIB", "STACH", "SBRAD", "AFLT", "IMI", "ASMI"]
+DEFAULT_LABELS = ["NORM", "AFIB", "STACH", "PVC", "AFLT", "IMI", "ASMI"]
 
 LABEL_TO_TASK = {
     "NORM":  "normal",
     "AFIB":  "arrhythmia",
     "STACH": "arrhythmia",
-    "SBRAD": "arrhythmia",
+    "PVC":   "arrhythmia",
+    "SBRAD": "arrhythmia",  # kept for backward compat
     "AFLT":  "arrhythmia",
     "IMI":   "mi",
     "ASMI":  "mi",
@@ -34,6 +35,9 @@ def build_label_matrix(
     df: pd.DataFrame,
     selected_labels: List[str] = DEFAULT_LABELS,
     threshold: float = 50.0,
+    label_threshold_overrides: Dict[str, float] = None,
+    normal_label: str = "NORM",
+    normal_mode: str = "exclusive",
 ) -> Tuple[np.ndarray, List[str]]:
     """
     Build a binary multi-label matrix from the scp_codes column.
@@ -42,6 +46,10 @@ def build_label_matrix(
         df: PTB-XL metadata DataFrame (must have 'scp_codes' column).
         selected_labels: List of SCP label strings to include.
         threshold: Minimum confidence to assign a label (0–100).
+        normal_label: Name of the normal rhythm label.
+        normal_mode:
+            - "exclusive": if any abnormal selected label is present, force normal_label=0
+            - "independent": keep the raw PTB-XL assignments unchanged
 
     Returns:
         label_matrix: np.ndarray of shape (N, len(selected_labels)), dtype float32.
@@ -61,6 +69,7 @@ def build_label_matrix(
     label_matrix = np.zeros((n, k), dtype=np.float32)
 
     label_to_idx = {lbl: i for i, lbl in enumerate(selected_labels)}
+    label_threshold_overrides = label_threshold_overrides or {}
 
     for row_idx, codes in enumerate(scp):
         for code, confidence in codes.items():
@@ -68,8 +77,16 @@ def build_label_matrix(
             # are assigned a confidence of exactly 0.0, which means 'Present'.
             # Only Diagnostic statements get non-zero confidence scores.
             if code in label_to_idx:
-                if confidence >= threshold or confidence == 0.0:
+                min_confidence = float(label_threshold_overrides.get(code, threshold))
+                if confidence >= min_confidence or confidence == 0.0:
                     label_matrix[row_idx, label_to_idx[code]] = 1.0
+
+    if normal_mode == "exclusive" and normal_label in label_to_idx:
+        normal_idx = label_to_idx[normal_label]
+        abnormal_indices = [i for i, name in enumerate(selected_labels) if name != normal_label]
+        if abnormal_indices:
+            abnormal_mask = label_matrix[:, abnormal_indices].sum(axis=1) > 0
+            label_matrix[abnormal_mask, normal_idx] = 0.0
 
     return label_matrix, selected_labels
 

@@ -1,0 +1,21 @@
+{
+  "created_at": "2026-04-27T11:57:52",
+  "processed_path": "data/processed_imi80_500hz",
+  "sampling_rate": 500,
+  "signal_length": 5000,
+  "label_threshold": 50,
+  "label_threshold_overrides": {
+    "IMI": 80
+  },
+  "normal_label": "NORM",
+  "normal_mode": "exclusive",
+  "selected_labels": [
+    "NORM",
+    "AFIB",
+    "STACH",
+    "PVC",
+    "AFLT",
+    "IMI",
+    "ASMI"
+  ]
+}

@@ -15,10 +15,12 @@ from sklearn.metrics import (
 )
 from typing import Dict, List, Optional, Union
 
+from src.data.label_builder import DEFAULT_LABELS
 
-LABEL_NAMES = ["NORM", "AFIB", "STACH", "SBRAD", "AFLT", "IMI", "ASMI"]
-ARRHYTHMIA_LABELS = ["NORM", "AFIB", "STACH", "SBRAD", "AFLT"]
+# Single source of truth with label_builder.DEFAULT_LABELS (PVC, not SBRAD).
 MI_LABELS = ["IMI", "ASMI"]
+ARRHYTHMIA_LABELS = [lbl for lbl in DEFAULT_LABELS if lbl not in MI_LABELS]
+LABEL_NAMES = list(DEFAULT_LABELS)
 
 
 def compute_classification_metrics(
@@ -102,6 +104,10 @@ def find_optimal_thresholds(
     min_pos_count: int = 20,
     max_rare_threshold: float = 0.4,
     class_beta: Optional[Dict[str, float]] = None,
+    min_threshold: float = 0.1,
+    class_min_threshold: Optional[Dict[str, float]] = None,
+    class_min_precision: Optional[Dict[str, float]] = None,
+    class_max_threshold: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """
     For each class, sweep threshold candidates and pick the one
@@ -122,6 +128,11 @@ def find_optimal_thresholds(
         min_pos_count: classes with fewer positive val samples get capped threshold.
         max_rare_threshold: maximum threshold for rare classes.
         class_beta:   dict of label_name → beta. Missing labels default to 1.0.
+        min_threshold: global lower bound on searched thresholds.
+        class_min_threshold: per-label lower bounds overriding min_threshold.
+        class_min_precision: optional per-label minimum precision constraints.
+        class_max_threshold: per-label upper bounds for ALL classes (rare or not).
+            Prevents high-variance thresholds on small val sets (e.g. SBRAD=0.90).
 
     Returns:
         Dict  label_name → optimal threshold (float).
@@ -130,6 +141,12 @@ def find_optimal_thresholds(
         candidates = np.arange(0.05, 0.96, 0.05)
     if class_beta is None:
         class_beta = {}
+    if class_min_threshold is None:
+        class_min_threshold = {}
+    if class_min_precision is None:
+        class_min_precision = {}
+    if class_max_threshold is None:
+        class_max_threshold = {}
 
     thresholds = {}
     for i, name in enumerate(label_names):
@@ -143,17 +160,31 @@ def find_optimal_thresholds(
         n_pos    = int(col_true.sum())
         is_rare  = n_pos < min_pos_count
         beta     = class_beta.get(name, 1.0)
+        threshold_floor = class_min_threshold.get(name, min_threshold)
+        min_prec = class_min_precision.get(name, None)
 
-        # For rare classes, restrict search to below the cap
-        search_candidates = candidates
+        # For rare classes, restrict search to below the rare cap
+        search_candidates = candidates[candidates >= threshold_floor]
+        if len(search_candidates) == 0:
+            search_candidates = np.array([threshold_floor])
         if is_rare:
-            search_candidates = candidates[candidates <= max_rare_threshold]
+            search_candidates = search_candidates[search_candidates <= max_rare_threshold]
             if len(search_candidates) == 0:
-                search_candidates = np.array([max_rare_threshold])
+                search_candidates = np.array([max(threshold_floor, min(max_rare_threshold, 0.5))])
+        # Apply per-class upper bound (prevents overfitting to small val sets)
+        if name in class_max_threshold:
+            ceil = class_max_threshold[name]
+            search_candidates = search_candidates[search_candidates <= ceil]
+            if len(search_candidates) == 0:
+                search_candidates = np.array([min(ceil, threshold_floor)])
 
         best_score, best_t = -1.0, 0.5
         for t in search_candidates:
             col_pred = (col_score >= t).astype(float)
+            if min_prec is not None:
+                prec = precision_score(col_true, col_pred, zero_division=0)
+                if prec < min_prec:
+                    continue
             score = fbeta_score(col_true, col_pred, beta=beta, zero_division=0)
             if score > best_score:
                 best_score, best_t = score, float(t)
@@ -218,7 +249,7 @@ class MetricsAccumulator:
         self.arrhythmia_true,  self.arrhythmia_score,  self.arrhythmia_pred  = [], [], []
         self.mi_true,          self.mi_score,           self.mi_pred          = [], [], []
         self.hrv_true,         self.hrv_pred                                  = [], []
-        self.losses = {"total": [], "arrhythmia": [], "mi": [], "hrv": []}
+        self.losses = {"total": [], "arrhythmia": [], "mi": [], "imi": [], "asmi": [], "hrv": []}
 
     def update(
         self,

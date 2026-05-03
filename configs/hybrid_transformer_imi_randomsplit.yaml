@@ -1,20 +1,25 @@
-# ECG multitask baseline rebuilt for clean experimentation.
-
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed"
-  splits: "data/splits"
+  processed: "data/processed_imi80_randsplit"
+  splits: "data/splits_imi80_randsplit"
   checkpoints: "checkpoints"
 
 dataset:
   sampling_rate: 500
   signal_length: 5000
   num_leads: 12
-  test_fold: 10
-  val_fold: 9
   label_threshold: 50
+  label_threshold_overrides:
+    IMI: 80
   normal_label: NORM
   normal_mode: exclusive
+  # split_method: random_grouped
+  split_method: random
+  split_group_key: patient_id
+  split_seed: 42
+  split_train_ratio: 0.70
+  split_val_ratio: 0.15
+  split_test_ratio: 0.15
 
 labels:
   - name: NORM
@@ -26,7 +31,7 @@ labels:
   - name: STACH
     task: arrhythmia
     index: 2
-  - name: SBRAD
+  - name: PVC
     task: arrhythmia
     index: 3
   - name: AFLT
@@ -65,7 +70,7 @@ model:
   head_hidden_dim: 128
   mi_branch_dim: 128
   dropout: 0.15
-  hrv_detach: false
+  hrv_detach: true
 
 augmentation:
   aug_lead_dropout: false
@@ -86,7 +91,9 @@ training:
   cosine_T0: 15
   loss_weights:
     arrhythmia: 1.0
-    mi: 1.3
+    mi: 1.8
+    imi: 1.25
+    asmi: 0.75
     hrv: 0.02
   label_smoothing: 0.02
   hrv_loss: smooth_l1
@@ -102,52 +109,41 @@ training:
   pin_memory: true
   save_every: 5
   early_stopping_patience: 8
-  monitor_metric: macro_f1
+  monitor_metric: imi_auprc
 
 eval:
-  metrics: [auroc, f1, accuracy]
+  metrics: [auroc, auprc, f1, accuracy]
   threshold: 0.5
-  # >0: every N epochs, run per-class threshold search on val and merge metrics as tuned/...
-  # (same protocol as post-train test). Set monitor_metric to imi_f1_tuned or macro_f1_tuned
-  # to early-stop on tuned F1. 0 = disabled (default; val F1 remains fixed-threshold).
-  val_tune_thresholds_every: 0
   threshold_search:
     min_threshold: 0.15
     min_pos_count: 20
     max_rare_threshold: 0.4
-    # Per-class F-beta weights:
-    #   beta=1.0 → F1 (balanced)  beta=2.0 → recall-weighted  beta=0.5 → precision-weighted
-    # SBRAD/AFLT: recall-weighted — missing them is clinically more costly than false positives
-    # IMI: slightly recall-weighted — missed MI is dangerous
     class_beta:
-      SBRAD: 2.0
-      AFLT:  2.0
-      IMI:   1.5
-      ASMI:  1.2
-    # Hard ceiling for non-rare classes — prevents overfitting on small val sets.
-    # (SBRAD had 64 val samples → F1-optimal was 0.90 → recall collapsed on test)
+      PVC: 1.0
+      AFLT: 2.0
+      IMI: 1.5
+      ASMI: 1.2
     arrhythmia_max_threshold:
-      NORM:  0.85
-      SBRAD: 0.65
+      AFLT: 0.40
+      AFIB: 0.75
       STACH: 0.80
-      AFIB:  0.75
     mi_max_threshold:
-      IMI:  0.65
+      IMI: 0.60
       ASMI: 0.70
     arrhythmia_min_threshold:
-      NORM:  0.30
-      AFIB:  0.20
+      NORM: 0.30
+      AFIB: 0.20
       STACH: 0.20
-      SBRAD: 0.20
-      AFLT:  0.10
+      PVC: 0.20
+      AFLT: 0.10
     arrhythmia_min_precision:
-      NORM:  0.70
-      AFIB:  0.20
+      NORM: 0.70
+      AFIB: 0.20
       STACH: 0.20
-      SBRAD: 0.15
+      PVC: 0.20
     mi_min_threshold:
-      IMI:  0.20
+      IMI: 0.20
       ASMI: 0.20
     mi_min_precision:
-      IMI:  0.25
-      ASMI: 0.25
+      IMI: 0.30
+      ASMI: 0.30

@@ -1,0 +1,33 @@
+{
+  "created_at": "2026-05-03T06:00:02",
+  "processed_path": "data/processed_imi80_groupkfold_500hz",
+  "sampling_rate": 500,
+  "signal_length": 5000,
+  "label_threshold": 50,
+  "label_threshold_overrides": {
+    "IMI": 80
+  },
+  "normal_label": "NORM",
+  "normal_mode": "exclusive",
+  "split_method": "stratified_group_kfold",
+  "split_seed": 42,
+  "split_group_key": "patient_id",
+  "split_train_ratio": 0.7,
+  "split_val_ratio": 0.15,
+  "split_test_ratio": 0.15,
+  "split_num_folds": 5,
+  "split_test_fold_index": 4,
+  "split_val_fold_index": 0,
+  "split_stratify_label": "IMI",
+  "test_fold": 10,
+  "val_fold": 9,
+  "selected_labels": [
+    "NORM",
+    "AFIB",
+    "STACH",
+    "PVC",
+    "AFLT",
+    "IMI",
+    "ASMI"
+  ]
+}

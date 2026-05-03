@@ -1,5 +1,3 @@
-# ECG multitask baseline rebuilt for clean experimentation.
-
 paths:
   raw_data: "data/raw/PTB-XL"
   processed: "data/processed"
@@ -26,7 +24,7 @@ labels:
   - name: STACH
     task: arrhythmia
     index: 2
-  - name: SBRAD
+  - name: PVC
     task: arrhythmia
     index: 3
   - name: AFLT
@@ -86,7 +84,7 @@ training:
   cosine_T0: 15
   loss_weights:
     arrhythmia: 1.0
-    mi: 1.3
+    mi: 1.8
     hrv: 0.02
   label_smoothing: 0.02
   hrv_loss: smooth_l1
@@ -107,47 +105,36 @@ training:
 eval:
   metrics: [auroc, f1, accuracy]
   threshold: 0.5
-  # >0: every N epochs, run per-class threshold search on val and merge metrics as tuned/...
-  # (same protocol as post-train test). Set monitor_metric to imi_f1_tuned or macro_f1_tuned
-  # to early-stop on tuned F1. 0 = disabled (default; val F1 remains fixed-threshold).
-  val_tune_thresholds_every: 0
   threshold_search:
     min_threshold: 0.15
     min_pos_count: 20
     max_rare_threshold: 0.4
-    # Per-class F-beta weights:
-    #   beta=1.0 → F1 (balanced)  beta=2.0 → recall-weighted  beta=0.5 → precision-weighted
-    # SBRAD/AFLT: recall-weighted — missing them is clinically more costly than false positives
-    # IMI: slightly recall-weighted — missed MI is dangerous
     class_beta:
-      SBRAD: 2.0
+      PVC:   1.0
       AFLT:  2.0
       IMI:   1.5
       ASMI:  1.2
-    # Hard ceiling for non-rare classes — prevents overfitting on small val sets.
-    # (SBRAD had 64 val samples → F1-optimal was 0.90 → recall collapsed on test)
     arrhythmia_max_threshold:
-      NORM:  0.85
-      SBRAD: 0.65
-      STACH: 0.80
+      AFLT:  0.40
       AFIB:  0.75
+      STACH: 0.80
     mi_max_threshold:
-      IMI:  0.65
+      IMI:  0.60
       ASMI: 0.70
     arrhythmia_min_threshold:
       NORM:  0.30
       AFIB:  0.20
       STACH: 0.20
-      SBRAD: 0.20
+      PVC:   0.20
       AFLT:  0.10
     arrhythmia_min_precision:
       NORM:  0.70
       AFIB:  0.20
       STACH: 0.20
-      SBRAD: 0.15
+      PVC:   0.20
     mi_min_threshold:
       IMI:  0.20
       ASMI: 0.20
     mi_min_precision:
-      IMI:  0.25
-      ASMI: 0.25
+      IMI:  0.30
+      ASMI: 0.30

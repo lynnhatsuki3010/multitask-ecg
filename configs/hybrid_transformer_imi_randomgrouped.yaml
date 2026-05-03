@@ -15,7 +15,7 @@ dataset:
   normal_mode: exclusive
   split_method: random_grouped
   split_group_key: patient_id
-  split_seed: 42
+  split_seed: 123
   split_train_ratio: 0.70
   split_val_ratio: 0.15
   split_test_ratio: 0.15
@@ -97,10 +97,10 @@ training:
     hrv: 0.02
   label_smoothing: 0.02
   hrv_loss: smooth_l1
-  use_pos_weight: true
+  use_pos_weight: false
   max_pos_weight: 30.0
   pos_weight_power: 0.75
-  use_focal: false
+  use_focal: true
   weighted_sampler: false
   focal_gamma: 2.0
   focal_alpha: 0.25

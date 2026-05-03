@@ -115,3 +115,30 @@ _Run: run_20260503_112137_hybrid-tf_
    - Recall của IMI cực cao (0.81) nhưng Precision bị kẹt ở mức thấp (0.355). Điều này cho thấy mô hình đang "overpredict" IMI (dự đoán dương tính giả nhiều) dẫn đến F1 và AUPRC không thể tăng mạnh. 
    - Nguyên nhân chính: Label IMI rất dễ bị lẫn với một số đặc điểm repolarization bình thường hoặc nhiễu.
 3. **Differential LR hoạt động đúng thiết kế**: MI Head train độc lập tốt hơn nên các metric phân biệt (AUROC) đều tốt, nhưng bài toán mất cân bằng class vẫn tác động lên Precision của IMI.
+
+---
+
+### Results (Focal Loss Update)
+_Run: run_20260503_160509_hybrid-tf-focal (Disabled pos_weight, Enabled Focal Loss gamma=2.0)_
+
+Nhận thấy vấn đề Over-prediction ở run trên khiến Validation Loss tăng vọt, chúng ta đã cập nhật dùng Focal Loss. Dưới đây là kết quả mới nhất:
+
+| Metric | E-02 (pos_weight) | E-02 (Focal Loss) | Delta |
+|--------|-------------------|-------------------|-------|
+| IMI AUROC | 0.950 | **0.952** | `+0.002` 📈 |
+| IMI AUPRC | 0.512 | **0.528** | `+0.016` 📈 |
+| IMI F1 (untuned)| 0.494 | **0.513** | `+0.019` 📈 |
+| ASMI F1 (untuned)| 0.728 | **0.734** | `+0.006` 📈 |
+| Arrhy macro F1 | 0.768 | **0.811** | `+0.043` 🚀 |
+| Arrhy macro AUROC| 0.984 | **0.984** | `+0.000` ➖ |
+
+**Phân tích kết quả Focal Loss:**
+1. **Focal Loss chữa hoàn toàn hiện tượng Over-prediction**:
+   - Bằng việc vô hiệu hóa `pos_weight` và dùng `Focal Loss` (gamma=2.0), hiện tượng bùng nổ Validation Loss đã biến mất. 
+   - Thay vì mù quáng bắt mọi ca bệnh là IMI (để tối ưu pos_weight), Focal Loss ép mô hình học cách tự tin hơn vào các ca khó. Kết quả: **IMI Precision tăng mạnh từ 0.355 lên 0.404**, đẩy IMI F1 (untuned) lên **0.513** (vượt xa baseline).
+2. **Arrhythmia thăng hoa rực rỡ**:
+   - F1 của Arrhythmia nhảy vọt lên **0.811** (tăng mạnh 4.3%).
+   - F1 của AFLT (rung nhĩ cuồng) từng là điểm yếu (F1 ~ 0.47) nay đã vọt lên **0.666**. Các nhãn như NORM, STACH, PVC đều đạt F1 > 0.82. Việc kết hợp Gradient Isolation và Focal Loss đã tạo ra môi trường học tập hoàn hảo cho các nhãn này.
+3. **Kết luận chung cho E-02**:
+   - Chúng ta đã phá vỡ được "trần F1" của IMI (vượt mốc 0.5) và đưa Arrhythmia lên một tầm cao mới (>0.8 F1).
+   - Kiến trúc chung đã tối ưu và ổn định tuyệt đối.

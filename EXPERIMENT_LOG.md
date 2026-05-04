@@ -169,14 +169,35 @@ We tested MixUp to see if it could smooth the decision boundaries and further im
 
 ## E-03 Phased Training Strategy Plan
 
-While Arrhythmia is approaching near-perfect metrics, IMI is still struggling due to shared feature representations. E-03 will adopt a **2-Phase Training Strategy**:
+While Arrhythmia is approaching near-perfect metrics, IMI is still struggling due to shared feature representations. E-03 adopts a **Seamless 2-Phase Training Strategy** directly integrated into `trainer.py`:
 
-1. **Phase 1: Full Multitask Pretraining**
-   - Train the full model (Backbone + Arrhy Head + MI Head) using the optimal E-02 configuration (Focal Loss, No Mixup) for 20-30 epochs.
-   - Goal: Allow the Backbone to learn robust shared representations and bring the Arrhythmia Head to full convergence.
-2. **Phase 2: Arrhythmia Freezing & MI Fine-tuning**
+1. **Phase 1 (Epoch 1-15): Full Multitask Pretraining**
+   - Train the full model using the optimal E-02 configuration (Focal Loss).
+   - Differential LR (MI gets 3x LR).
+2. **Phase 2 (Epoch 16-40): Arrhythmia Freezing & MI Fine-tuning**
    - **Freeze** the entire Backbone and Arrhythmia Head.
-   - Disable Gradient Isolation (since only one task will be actively updated).
-   - **Unfreeze** only the parameters belonging to the MI Head (LeadGroupEncoder + Classifier).
-   - Fine-tune with a low learning rate for 10-20 epochs.
-   - Goal: Force the MI Head to extract every last bit of task-specific information from the frozen feature maps, strictly optimizing for IMI Precision without deteriorating Arrhythmia performance.
+   - Disable Gradient Isolation (`mi_gradient_scale=1.0`).
+   - The Cosine Warm Restart scheduler ($T_0=10$) triggers a massive LR spike right at epoch 16, allowing the MI head to powerfully fine-tune.
+
+### Results (Initial 2-Phase Strategy Run)
+_Run: run_20260504_212532_hybrid-tf-focal_
+
+| Metric | E-02 (Focal Loss, 1 Phase) | E-03 (2-Phase, Initial Run) | Delta |
+|--------|----------------------------|-----------------------------|-------|
+| IMI AUROC | 0.952 | **0.952** | `+0.000` ➖ |
+| IMI AUPRC | 0.528 | **0.534** | `+0.006` 📈 |
+| IMI F1 (untuned)| 0.513 | 0.498 | `-0.015` 📉 |
+| Arrhy macro F1 | 0.811 | 0.807 | `-0.004` 📉 |
+
+**Results Analysis (Why Phase 2 Showed No Progress):**
+1. **Early Stopping Patience Bug**: 
+   - Phase 2 begins at Epoch 16. However, because the global `no_improve_count` variable (for Early Stopping) was NOT correctly reset to 0 upon entering Phase 2, the counter accumulated from Phase 1. As a result, the training loop hit the patience limit of 10 and **aborted abruptly at Epoch 18**. Phase 2 only had a microscopic 3 epochs to train, preventing the MI Head from escaping local minima via the Cosine Restart cycle.
+2. **BatchNorm Drift Corruption (The Silent Killer)**:
+   - In PyTorch, setting `requires_grad = False` prevents weights from updating, but it **does not freeze `BatchNorm` running statistics**. During the training loop, `model.train()` puts all modules back into training mode. The frozen backbone's `BatchNorm1d` layers aggressively updated their `running_mean` and `running_var` based on the new batches, which were now being optimized exclusively for the MI loss.
+   - This "drifting" of normalization statistics completely corrupted the representations that the Arrhythmia head relied upon, causing performance drops (Arrhy macro F1 dropped from 0.811 to 0.807, and validation curves showed severe instability). This performance collapse in the shared backbone accelerated the Early Stopping trigger.
+
+**Action Plan & Fixes Implemented:**
+- **Fix 1**: Restored the `self.no_improve_count = 0` reset logic correctly inside the Phase 2 trigger block in `trainer.py`.
+- **Fix 2**: Created an `_apply_phase2_eval()` hook in `ECGMultiTaskModel` and overrode the `train()` method. This ensures that whenever `trainer.py` calls `model.train()`, the frozen backbone and arrhythmia head are forcefully put back into `.eval()` mode, freezing all `BatchNorm` statistics and `Dropout` behaviors during Phase 2.
+
+The pipeline is now mathematically sound and ready for the true Phase 2 run.

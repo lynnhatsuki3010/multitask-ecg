@@ -381,9 +381,12 @@ class Trainer:
                 print(f"\n{'-'*60}")
                 print(f"  [Phase 2 Initiated] Freezing Backbone & Arrhythmia Head")
                 print(f"  Gradient isolation disabled. Fine-tuning MI Head only.")
+                print(f"  Resetting Early Stopping patience.")
                 print(f"{'-'*60}\n")
                 if hasattr(self.model, "freeze_for_phase2"):
                     self.model.freeze_for_phase2()
+                # Reset early stopping so Phase 2 has time to learn
+                self.no_improve_count = 0
 
             t0 = time.time()
 

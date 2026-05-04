@@ -222,6 +222,8 @@ class ECGMultiTaskModel(nn.Module):
         Freeze the backbone and arrhythmia head for Phase 2 fine-tuning.
         Also disables MI gradient isolation since only MI receives gradients.
         """
+        self._phase2_active = True
+        
         for param in self.backbone.parameters():
             param.requires_grad = False
         
@@ -240,3 +242,22 @@ class ECGMultiTaskModel(nn.Module):
                 
         # Disable gradient isolation
         self.mi_gradient_scale = 1.0
+        
+        # Set them to eval mode immediately
+        self._apply_phase2_eval()
+
+    def _apply_phase2_eval(self) -> None:
+        """Helper to force frozen modules into eval mode (to freeze BatchNorm stats and Dropout)."""
+        self.backbone.eval()
+        self.arrhythmia_pool.eval()
+        self.arrhythmia_head.eval()
+        self.sequence_pool.eval()
+        if self.hrv_enabled:
+            self.hrv_head.eval()
+
+    def train(self, mode: bool = True):
+        """Override train() to ensure frozen modules stay in eval() mode during Phase 2."""
+        super().train(mode)
+        if mode and getattr(self, "_phase2_active", False):
+            self._apply_phase2_eval()
+        return self

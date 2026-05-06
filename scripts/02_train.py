@@ -46,11 +46,13 @@ from src.training.trainer import Trainer
 
 # ─── Plot helper ─────────────────────────────────────────────────────────────────────
 
-def plot_training_history(history: dict, run_dir: str):
+def plot_training_history(history: dict, run_dir: str, freeze_epoch: int = -1):
     """
-    Save training curves (loss, AUROC) as PNG into run_dir.
-    Reads history dict produced by Trainer: {'train': [...], 'val': [...]}
-    where each entry is a metrics dict per epoch.
+    Save training curves as a 2×3 PNG grid:
+      Row 1: Total Loss | Arrhy AUROC | MI AUROC
+      Row 2: IMI F1     | IMI AUPRC   | Gradient Norm ratio (MI/Backbone)
+
+    A vertical dashed line marks the Phase 2 boundary if freeze_epoch > 0.
     """
     train_h = history.get("train", [])
     val_h   = history.get("val",   [])
@@ -63,47 +65,195 @@ def plot_training_history(history: dict, run_dir: str):
     def extract(records, key):
         return [r.get(key, float("nan")) for r in records]
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    def add_phase_line(ax):
+        """Draw vertical dashed line at phase 2 boundary."""
+        if freeze_epoch > 0 and freeze_epoch <= len(epochs):
+            ax.axvline(x=freeze_epoch, color="darkorange", linestyle="--",
+                       linewidth=1.2, alpha=0.8, label=f"Phase 2 start (ep {freeze_epoch})")
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     fig.suptitle("Training Curves", fontsize=14, fontweight="bold")
 
-    # ── Loss ─────────────────────────────
-    ax = axes[0]
+    # ── (0,0) Total Loss ─────────────────────────────────────────
+    ax = axes[0, 0]
     if train_h:
-        ax.plot(epochs[:len(train_h)], extract(train_h, "loss/total"), label="Train Loss", color="steelblue")
-    ax.plot(epochs, extract(val_h, "loss/total"),   label="Val Loss",   color="coral", linestyle="--")
+        ax.plot(epochs[:len(train_h)], extract(train_h, "loss/total"),
+                label="Train Loss", color="steelblue")
+    ax.plot(epochs, extract(val_h, "loss/total"),
+            label="Val Loss", color="coral", linestyle="--")
+    add_phase_line(ax)
     ax.set_title("Total Loss")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
-    ax.legend()
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
 
-    # ── Arrhythmia AUROC ─────────────────
-    ax = axes[1]
-    ax.plot(epochs, extract(val_h, "auroc/arrhy/macro"), label="Val Arrhy AUROC", color="mediumseagreen")
+    # ── (0,1) Arrhythmia AUROC ───────────────────────────────────
+    ax = axes[0, 1]
+    ax.plot(epochs, extract(val_h, "auroc/arrhy/macro"),
+            label="Val Arrhy AUROC", color="mediumseagreen")
     ax.axhline(y=0.9, color="gray", linestyle=":", linewidth=0.8, label="0.90 target")
+    add_phase_line(ax)
     ax.set_title("Arrhythmia AUROC (Val)")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("AUROC")
     ax.set_ylim(0, 1.02)
-    ax.legend()
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
 
-    # ── MI AUROC ───────────────────────
-    ax = axes[2]
-    ax.plot(epochs, extract(val_h, "auroc/mi/macro"), label="Val MI AUROC", color="mediumpurple")
+    # ── (0,2) MI AUROC ───────────────────────────────────────────
+    ax = axes[0, 2]
+    ax.plot(epochs, extract(val_h, "auroc/mi/macro"),
+            label="Val MI AUROC", color="mediumpurple")
     ax.axhline(y=0.9, color="gray", linestyle=":", linewidth=0.8, label="0.90 target")
+    add_phase_line(ax)
     ax.set_title("MI AUROC (Val)")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("AUROC")
     ax.set_ylim(0, 1.02)
-    ax.legend()
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
+
+    # ── (1,0) IMI F1 ─────────────────────────────────────────────
+    ax = axes[1, 0]
+    ax.plot(epochs, extract(val_h, "f1/mi/IMI"),
+            label="Val IMI F1", color="tomato")
+    add_phase_line(ax)
+    ax.set_title("IMI F1 (Val)")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("F1")
+    ax.set_ylim(0, 1.02)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    # ── (1,1) IMI AUPRC ──────────────────────────────────────────
+    ax = axes[1, 1]
+    ax.plot(epochs, extract(val_h, "auprc/mi/IMI"),
+            label="Val IMI AUPRC", color="darkorange")
+    add_phase_line(ax)
+    ax.set_title("IMI AUPRC (Val)")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("AUPRC")
+    ax.set_ylim(0, 1.02)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    # ── (1,2) Gradient Norm ratio MI/Backbone ────────────────────
+    ax = axes[1, 2]
+    gn_mi = extract(train_h, "grad_norm/mi") if train_h else []
+    gn_bb = extract(train_h, "grad_norm/backbone") if train_h else []
+    if gn_mi and any(not np.isnan(v) for v in gn_mi):
+        ratios = [m / max(b, 1e-8) for m, b in zip(gn_mi, gn_bb)]
+        ax.plot(epochs[:len(gn_mi)], ratios,
+                label="GradNorm MI/Backbone", color="slategray")
+        add_phase_line(ax)
+        ax.set_title("Gradient Norm Ratio (Train)")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Ratio")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+    else:
+        ax.text(0.5, 0.5, "No gradient norm data",
+                ha="center", va="center", transform=ax.transAxes,
+                fontsize=10, color="gray")
+        ax.axis("off")
 
     plt.tight_layout()
     out_path = os.path.join(run_dir, "training_curves.png")
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Training curves saved → {out_path}")
+
+
+def plot_mi_error_analysis(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    thresholds: dict,
+    all_label_names: list,
+    all_label_indices: list,
+    mi_label_names: list,
+    mi_indices: list,
+    run_dir: str,
+):
+    """
+    For each MI label, show what other labels co-occur in FN and FP cases.
+
+    FN analysis (missed MI):  GT=1 but Pred=0 → what DID the model predict?
+    FP analysis (false MI):   GT=0 but Pred=1 → what was the actual ground truth?
+
+    Saved to run_dir/mi_error_analysis.png
+    """
+    n_mi = len(mi_label_names)
+    fig, axes = plt.subplots(n_mi, 2, figsize=(14, 5 * n_mi))
+    if n_mi == 1:
+        axes = axes[np.newaxis, :]
+    fig.suptitle("MI Error Analysis — Co-label Distribution in FP and FN Cases",
+                 fontsize=13, fontweight="bold")
+
+    for row_i, (mi_name, mi_col) in enumerate(zip(mi_label_names, mi_indices)):
+        thr   = thresholds.get(mi_name, 0.5)
+        gt    = y_true[:, mi_col].astype(int)
+        pred  = (y_score[:, mi_col] >= thr).astype(int)
+
+        fn_mask = (gt == 1) & (pred == 0)   # missed positives
+        fp_mask = (gt == 0) & (pred == 1)   # false alarms
+
+        # Collect all OTHER label names (everything except the MI label itself)
+        other_names  = [n for n, c in zip(all_label_names, all_label_indices) if n != mi_name]
+        other_cols   = [c for n, c in zip(all_label_names, all_label_indices) if n != mi_name]
+
+        def co_freq(mask, label_col):
+            """Fraction of samples in mask where another label is predicted/true positive."""
+            if mask.sum() == 0:
+                return 0.0
+            return float((y_score[:, label_col][mask] >= thresholds.get(
+                all_label_names[all_label_indices.index(label_col)]
+                if label_col in all_label_indices else 0, 0.5
+            )).mean())
+
+        def gt_freq(mask, label_col):
+            """Fraction of samples in mask where another label is ground-truth positive."""
+            if mask.sum() == 0:
+                return 0.0
+            return float(y_true[:, label_col][mask].mean())
+
+        fn_pred_rates = [co_freq(fn_mask, c) for c in other_cols]
+        fp_gt_rates   = [gt_freq(fp_mask, c) for c in other_cols]
+
+        colors_fn = ["tomato" if r > 0.1 else "lightcoral" for r in fn_pred_rates]
+        colors_fp = ["steelblue" if r > 0.1 else "lightblue" for r in fp_gt_rates]
+
+        # FN panel
+        ax = axes[row_i, 0]
+        bars = ax.bar(other_names, fn_pred_rates, color=colors_fn, edgecolor="white")
+        ax.set_title(f"{mi_name} — False Negatives (n={fn_mask.sum()})\n"
+                     f"What did model predict instead?", fontsize=10)
+        ax.set_ylabel("Co-prediction rate")
+        ax.set_ylim(0, 1.05)
+        ax.axhline(0.1, color="gray", linestyle=":", linewidth=0.8)
+        for bar, val in zip(bars, fn_pred_rates):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                    f"{val:.2f}", ha="center", va="bottom", fontsize=8)
+        ax.grid(axis="y", alpha=0.3)
+
+        # FP panel
+        ax = axes[row_i, 1]
+        bars = ax.bar(other_names, fp_gt_rates, color=colors_fp, edgecolor="white")
+        ax.set_title(f"{mi_name} — False Positives (n={fp_mask.sum()})\n"
+                     f"What was the true label?", fontsize=10)
+        ax.set_ylabel("Ground-truth positive rate")
+        ax.set_ylim(0, 1.05)
+        ax.axhline(0.1, color="gray", linestyle=":", linewidth=0.8)
+        for bar, val in zip(bars, fp_gt_rates):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                    f"{val:.2f}", ha="center", va="bottom", fontsize=8)
+        ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    out_path = os.path.join(run_dir, "mi_error_analysis.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  MI error analysis saved → {out_path}")
 
 
 def plot_confusion_matrices(
@@ -863,10 +1013,31 @@ def main():
 
     # ── Plot training curves ───────────────────────────────────────────────
     print("\n► Saving training curves ...")
-    plot_training_history(trainer.history, cfg["paths"]["checkpoints"])
+    freeze_epoch = cfg.get("training", {}).get("freeze_backbone_at_epoch", -1)
+    plot_training_history(trainer.history, cfg["paths"]["checkpoints"],
+                          freeze_epoch=int(freeze_epoch) if freeze_epoch else -1)
 
     # ── Plot confusion matrices ─────────────────────────────────────────
     print("\n► Saving confusion matrices ...")
+    # Collect full-score matrix for MI error analysis
+    _all_true, _all_scores = [], []
+    model.eval()
+    with torch.no_grad():
+        for _batch in loaders["test"]:
+            _sig = _batch["signal"].to(device)
+            _lbl = _batch["labels"]
+            _preds = model(_sig)
+            K = _lbl.shape[1]
+            _scores = torch.zeros(_lbl.shape[0], K)
+            for j, idx in enumerate(arrhy_indices):
+                _scores[:, idx] = torch.sigmoid(_preds["arrhythmia"]).cpu()[:, j]
+            for j, idx in enumerate(mi_indices):
+                _scores[:, idx] = torch.sigmoid(_preds["mi"]).cpu()[:, j]
+            _all_true.append(_lbl)
+            _all_scores.append(_scores)
+    _y_true  = torch.cat(_all_true,  dim=0).numpy()
+    _y_score = torch.cat(_all_scores, dim=0).numpy()
+
     plot_confusion_matrices(
         model        = model,
         loader       = loaders["test"],
@@ -877,6 +1048,21 @@ def main():
         mi_indices        = trainer.mi_idx,
         run_dir      = cfg["paths"]["checkpoints"],
         device       = device,
+    )
+
+    # ── MI Error Analysis ───────────────────────────────────────────────
+    print("\n► Saving MI error analysis ...")
+    _all_label_names   = trainer.arrhythmia_label_names + trainer.mi_label_names
+    _all_label_indices = list(trainer.arrhythmia_idx)   + list(trainer.mi_idx)
+    plot_mi_error_analysis(
+        y_true           = _y_true,
+        y_score          = _y_score,
+        thresholds       = thresholds,
+        all_label_names  = _all_label_names,
+        all_label_indices = _all_label_indices,
+        mi_label_names   = trainer.mi_label_names,
+        mi_indices       = list(trainer.mi_idx),
+        run_dir          = cfg["paths"]["checkpoints"],
     )
 
 

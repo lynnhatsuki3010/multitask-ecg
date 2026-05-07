@@ -238,6 +238,54 @@ python scripts/02_train.py --config configs/experiments/norm_e03_minmax.yaml
 
 ---
 
-## Stage 3–6: (To be added after Stage 2 winner is determined)
+## Stage 3: Loss Strategy
+
+**Variable**: How class imbalance and hard examples are penalized.
+**Baseline inherited**: `SPLIT-E02` (`random_grouped`), `NORM-E01` (`zscore`).
+
+### Experiment Configs & Commands
+
+> Note: We are testing `pos_weight`, `Focal Loss`, and `Gradient Isolation`. Since data processing is identical to Stage 2, we reuse the same `data/processed_split_e02` folder. No need to run `01_build_metadata.py`.
+
+#### LOSS-E01 — BCE + `pos_weight`
+Config: `configs/experiments/loss_e01_posweight.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/loss_e01_posweight.yaml
+```
+**Mechanism**: Standard way to combat imbalance. Multiplies the BCE loss of positive samples by `N_neg / N_pos`. (Expected to over-predict IMI, based on E-02 findings).
+
+---
+
+#### LOSS-E02 — Focal Loss
+Config: `configs/experiments/loss_e02_focal.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/loss_e02_focal.yaml
+```
+**Mechanism**: Dynamically scales cross entropy based on prediction confidence (`gamma=2.0`, `alpha=0.25`). Forces the model to focus on hard-to-classify samples rather than just easy negatives.
+
+---
+
+#### LOSS-E03 — Focal Loss + Gradient Isolation
+Config: `configs/experiments/loss_e03_focal_gradiso.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/loss_e03_focal_gradiso.yaml
+```
+**Mechanism**: Uses Focal Loss, but scales the gradients coming from the MI head back into the shared CNN backbone by `0.3`. Prevents the minority MI task from distorting the robust features learned for the Arrhythmia task.
+
+---
+
+### Stage 3 Results (to be filled after running)
+
+| Experiment | Loss Configuration | IMI AUROC | IMI AUPRC | IMI F1 | Arrhy macro F1 | Folder | Winner? |
+|------------|--------------------|-----------|-----------|--------|----------------|--------|---------|
+| LOSS-E01 | `pos_weight` | — | — | — | — | — | |
+| LOSS-E02 | `Focal Loss` | — | — | — | — | — | |
+| LOSS-E03 | `Focal + GradIso (0.3)`| — | — | — | — | — | |
+
+**Stage 3 winner**: _(pending)_
+
+---
+
+## Stage 4–6: (To be added after Stage 3 winner is determined)
 
 

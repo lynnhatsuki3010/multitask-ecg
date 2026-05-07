@@ -26,6 +26,12 @@ dataset:
   split_train_ratio: 0.70
   split_val_ratio: 0.15
   split_test_ratio: 0.15
+  split_num_folds: 10
+  split_test_fold_index: 0
+  split_val_fold_index: null
+  split_stratify_label: null
+  test_fold: 10
+  val_fold: 9
 
 labels:
   - {name: NORM,  task: normal,     index: 0}

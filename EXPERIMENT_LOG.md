@@ -219,15 +219,22 @@ python scripts/02_train.py --config configs/experiments/norm_e03_minmax.yaml
 
 ---
 
-### Stage 2 Results (to be filled after running)
+### Stage 2 Results
 
 | Experiment | Normalization | IMI AUROC | IMI AUPRC | IMI F1 | Arrhy macro F1 | Folder | Winner? |
 |------------|---------------|-----------|-----------|--------|----------------|--------|---------|
-| NORM-E01 | `zscore` | — | — | — | — | — | |
-| NORM-E02 | `robust` | — | — | — | — | — | |
-| NORM-E03 | `minmax` | — | — | — | — | — | |
+| NORM-E01 | `zscore` | **0.948** | **0.525** | **0.511** | **0.830** | `run_20260507_204106_hybrid-tf` | ✅ |
+| NORM-E02 | `robust` | 0.946 | 0.512 | **0.511** | 0.740 | `run_20260507_220132_hybrid-tf` | |
+| NORM-E03 | `minmax` | 0.946 | 0.485 | 0.501 | 0.759 | `run_20260507_231720_hybrid-tf` | |
 
-**Stage 2 winner**: _(pending)_
+**Stage 2 winner**: **NORM-E01** (`zscore`)
+
+**Analysis:**
+1. **NORM-E01 (zscore) dominated across all metrics**. The standard normal distribution approach (zero mean, unit variance) works perfectly with the network's weight initialization.
+2. **NORM-E02 (robust) destroyed Arrhythmia performance**. While it maintained IMI F1 (0.511), the Arrhythmia macro F1 plummeted from 0.830 to 0.740. ECG diagnosis heavily relies on exact amplitude ratios between leads; `robust` scaling uses IQR, which can non-linearly compress peaks, destroying morphological clues.
+3. **NORM-E03 (minmax) performed worst overall**. Restricting the signal tightly to `[0, 1]` flattens crucial variations, causing performance drops across both tasks.
+
+→ **NORM-E01 config carries forward** to Stage 3.
 
 ---
 

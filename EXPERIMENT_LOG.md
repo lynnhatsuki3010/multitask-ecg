@@ -164,19 +164,27 @@ python scripts/02_train.py --config configs/experiments/split_e03_stratified_imi
 
 ---
 
-### Stage 1 Results (to be filled after running)
+### Stage 1 Results
 
-| Experiment | Split Method | IMI AUROC | IMI AUPRC | IMI F1 | Arrhy F1 | Winner? |
-|------------|-------------|-----------|-----------|--------|----------|---------|
-| SPLIT-E01 | strat_fold | — | — | — | — | |
-| SPLIT-E02 | random_grouped | — | — | — | — | |
-| SPLIT-E03 | stratified_group_kfold (IMI) | — | — | — | — | |
+| Experiment | Split Method | IMI AUROC | IMI AUPRC | IMI F1 | Arrhy macro F1 | Folder | Winner? |
+|------------|-------------|-----------|-----------|--------|----------------|--------|---------|
+| SPLIT-E01 | `strat_fold` | 0.937 | 0.457 | 0.456 | 0.733 | `run_20260506_231153_hybrid-tf` | |
+| SPLIT-E02 | `random_grouped` | 0.947 | **0.519** | **0.517** | **0.828** | `run_20260507_003151_hybrid-tf` | ✅ |
+| SPLIT-E03 | `stratified_group_kfold (IMI)` | **0.959** | 0.506 | 0.558 | 0.768 | `run_20260507_013801_hybrid-tf` | |
 
-**Stage 1 winner**: _(pending)_
+**Stage 1 winner**: **SPLIT-E02** (`random_grouped`, seed=42)
+
+**Analysis:**
+1. **SPLIT-E01 (strat_fold) performed worst** — IMI AUPRC only 0.457, Arrhy F1 only 0.733. PTB-XL's built-in fold assigns patients across 10 folds designed for full 10-fold CV, meaning fold 10 (test) may have a skewed IMI distribution in a 1-fold evaluation scenario.
+2. **SPLIT-E02 (random_grouped) is the clear winner** — Best IMI AUPRC (0.519) and Arrhy macro F1 (0.828). The 70/15/15 patient-grouped random split naturally produces a balanced training set size and representative test split.
+3. **SPLIT-E03 (stratified on IMI)** — Highest IMI AUROC (0.959) and IMI F1 (0.558) but Arrhy F1 dropped to 0.768 vs SPLIT-E02's 0.828. Stratifying only on IMI creates a lopsided fold structure that hurts Arrhythmia. AUPRC (0.506) is also lower than E02. Not the right tradeoff.
+
+→ **SPLIT-E02 config carries forward** to Stage 2 (Normalization).
 
 ---
 
 ## Stage 2–6: (To be added after Stage 1 winner is determined)
 
 Stage 2 experiments (NORM-E01 to NORM-E03) will be created once Stage 1 winner is confirmed.
+
 

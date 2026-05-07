@@ -50,6 +50,12 @@ def normalize_signal(signal: np.ndarray, method: str = "zscore") -> np.ndarray:
         vmax = signal.max(axis=-1, keepdims=True)
         denom = np.where((vmax - vmin) < 1e-8, 1.0, vmax - vmin)
         return (signal - vmin) / denom
+    elif method == "robust":
+        median = np.median(signal, axis=-1, keepdims=True)
+        q75, q25 = np.percentile(signal, [75, 25], axis=-1, keepdims=True)
+        iqr = q75 - q25
+        iqr = np.where(iqr < 1e-8, 1.0, iqr)
+        return (signal - median) / iqr
     else:
         return signal
 

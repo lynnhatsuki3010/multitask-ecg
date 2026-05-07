@@ -183,8 +183,54 @@ python scripts/02_train.py --config configs/experiments/split_e03_stratified_imi
 
 ---
 
-## Stage 2–6: (To be added after Stage 1 winner is determined)
+## Stage 2: Normalization Strategy
 
-Stage 2 experiments (NORM-E01 to NORM-E03) will be created once Stage 1 winner is confirmed.
+**Variable**: How raw ECG signal values are scaled
+**Baseline inherited**: `SPLIT-E02` (`random_grouped` split)
+
+### Experiment Configs & Commands
+
+> Note: Because we are NOT changing the split method or data selection, we do **not** need to re-run `01_build_metadata.py`. The `random_grouped` data built in Stage 1 is perfectly reusable. The normalization happens on-the-fly during training in `preprocessing.py`.
+
+#### NORM-E01 — `zscore` (Baseline)
+Config: `configs/experiments/norm_e01_zscore.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/norm_e01_zscore.yaml
+```
+**Mechanism**: `(x - mean) / std` per lead.
+
+---
+
+#### NORM-E02 — `robust` scaler (Median / IQR)
+Config: `configs/experiments/norm_e02_robust.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/norm_e02_robust.yaml
+```
+**Mechanism**: `(x - median) / IQR` per lead. Less sensitive to extreme voltage spikes/artifacts.
+
+---
+
+#### NORM-E03 — `minmax` scaler
+Config: `configs/experiments/norm_e03_minmax.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/norm_e03_minmax.yaml
+```
+**Mechanism**: `(x - min) / (max - min)` per lead. Scales strictly to [0, 1].
+
+---
+
+### Stage 2 Results (to be filled after running)
+
+| Experiment | Normalization | IMI AUROC | IMI AUPRC | IMI F1 | Arrhy macro F1 | Folder | Winner? |
+|------------|---------------|-----------|-----------|--------|----------------|--------|---------|
+| NORM-E01 | `zscore` | — | — | — | — | — | |
+| NORM-E02 | `robust` | — | — | — | — | — | |
+| NORM-E03 | `minmax` | — | — | — | — | — | |
+
+**Stage 2 winner**: _(pending)_
+
+---
+
+## Stage 3–6: (To be added after Stage 2 winner is determined)
 
 

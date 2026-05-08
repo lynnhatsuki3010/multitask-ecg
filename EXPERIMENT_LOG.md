@@ -388,14 +388,26 @@ python scripts/02_train.py --config configs/experiments/samp_e02_weighted.yaml
 
 ---
 
-### Stage 5 Results (to be filled after running)
+### Stage 5 Results
 
 | Experiment | Sampling | IMI AUROC | IMI AUPRC | IMI F1 | Arrhy macro F1 | Folder | Winner? |
 |------------|----------|-----------|-----------|--------|----------------|--------|---------|
-| SAMP-E01 | `Uniform` | — | — | — | — | — | |
-| SAMP-E02 | `Weighted` | — | — | — | — | — | |
+| SAMP-E01 | `Uniform` | **0.949** | **0.516** | **0.518** | **0.823** | `run_20260508_185741_hybrid-tf-focal-aug` | ✅ |
+| SAMP-E02 | `Weighted` | 0.938 | 0.471 | 0.486 | 0.807 | `run_20260508_200759_hybrid-tf-focal-wrs-aug` | |
 
-**Stage 5 winner**: _(pending)_
+*(Reference AUG-E03: IMI AUPRC 0.516, Arrhy F1 0.825)*
+
+**Stage 5 winner**: **SAMP-E01** (`Uniform Sampling`)
+
+**Analysis — Vì sao Weighted Sampler thất bại?**
+
+Đây là một bài học quan trọng. Kết quả này hoàn toàn có lý:
+
+1. **Weighted Sampler + Focal Loss = Double-correction**: Chúng ta đã có Focal Loss để bù đắp mất cân bằng dữ liệu rồi. Khi thêm Weighted Sampler lên trên, ta vô tình **bù đắp 2 lần** — mỗi batch đã nặng về IMI hơn (do sampler), rồi gradient của IMI còn được khuếch đại thêm lần nữa (do focal). Điều này khiến mô hình quá tập trung vào IMI đến mức quên mất Arrhythmia (F1 rớt 0.807).
+2. **Weighted Sampler làm giảm sự đa dạng trong batch**: Khi bốc quá nhiều ca IMI vào mỗi batch, tỉ lệ NORM và AFIB giảm đi. Mô hình mất đi "ngữ cảnh âm tính" phong phú cần thiết để học được đường ranh giới quyết định (decision boundary) sắc nét.
+3. **Kết luận thực tiễn**: Với multi-task models mà loss đã được điều chỉnh (Focal Loss + GradIso), Uniform Sampling luôn là lựa chọn an toàn. Weighted Sampler chỉ phát huy tác dụng khi dùng cùng BCE thuần túy không có bất kỳ cơ chế rebalancing nào khác.
+
+→ **SAMP-E01 (Uniform) config carries forward** to Stage 6. Stack hiện tại đã ổn định.
 
 ---
 

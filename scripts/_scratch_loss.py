@@ -1,10 +1,8 @@
 import json, os, yaml
 
 runs = [
-    'run_20260508_071142_hybrid-tf-focal-aug-mxp',
-    'run_20260508_081931_hybrid-tf-focal-aug',
-    'run_20260508_092233_hybrid-tf-focal-aug',
-    'run_20260508_102608_hybrid-tf-focal-aug',
+    'run_20260508_185741_hybrid-tf-focal-aug',
+    'run_20260508_200759_hybrid-tf-focal-wrs-aug',
 ]
 keys = ['auroc/mi/IMI','auprc/mi/IMI','f1/mi/IMI','auroc/arrhy/macro','f1/arrhy/macro']
 
@@ -14,11 +12,8 @@ for run in runs:
     if os.path.exists(cfg_path):
         with open(cfg_path, 'r', encoding='utf-8') as f:
             cfg = yaml.safe_load(f)
-            a = cfg.get('augmentation', {})
-            print(f"  Mixup: {a.get('aug_mixup', False)}")
-            print(f"  Crop: {a.get('aug_random_crop', False)}")
-            print(f"  Noise/Warp: {a.get('aug_baseline_wander', False)}")
-            print(f"  LeadDrop: {a.get('aug_lead_dropout', False)}")
+            t = cfg.get('training', {})
+            print(f"  weighted_sampler: {t.get('weighted_sampler', False)}")
             
     met_path = os.path.join('checkpoints', run, 'test_metrics.json')
     if os.path.exists(met_path):

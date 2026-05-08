@@ -411,6 +411,55 @@ python scripts/02_train.py --config configs/experiments/samp_e02_weighted.yaml
 
 ---
 
-## Stage 6: Architecture / Training Tweaks (To be added after Stage 5)
+## Stage 6: Final Full-Length Validation (50 Epochs, Multi-Seed)
 
+**Goal**: Chứng minh rằng tổ hợp kỹ thuật từ các Stage trước thật sự mạnh hơn baseline khi được cho đủ thời gian hội tụ. Đây là lần chạy **dài hạn và dứt khoát** để báo cáo kết quả cuối cùng.
 
+**Final winning stack (từ chuỗi ablation S1→S5):**
+| Component | Choice | Stage |
+|-----------|--------|-------|
+| Split | `random_grouped` | S1 |
+| Normalization | `zscore` | S2 |
+| Loss | `Focal Loss` (γ=2, α=0.25) | S3 |
+| Gradient Isolation | `mi_gradient_scale=0.3` | S3 |
+| Augmentation | `Baseline Wander + Time Warp` | S4 |
+| Sampling | `Uniform` | S5 |
+| Epochs | **50** (from 15) | S6 |
+| Warmup | **5 epochs** (from 2) | S6 |
+| Early Stopping Patience | **20** (from 15) | S6 |
+| Threshold Tuning | Every 5 epochs | S6 |
+
+### Experiment Configs & Commands
+
+#### FINAL-E01 — Seed 42
+Config: `configs/experiments/final_e01_seed42.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/final_e01_seed42.yaml
+```
+
+#### FINAL-E02 — Seed 123 (Stability Check)
+Config: `configs/experiments/final_e02_seed123.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/final_e02_seed123.yaml
+```
+
+#### FINAL-E03 — Seed 2024 (Stability Check)
+Config: `configs/experiments/final_e03_seed2024.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/final_e03_seed2024.yaml
+```
+
+---
+
+### Stage 6 Results (to be filled after running)
+
+| Run | Seed | IMI AUROC | IMI AUPRC | IMI F1 | Arrhy macro F1 | Folder |
+|-----|------|-----------|-----------|--------|----------------|--------|
+| FINAL-E01 | 42 | — | — | — | — | — |
+| FINAL-E02 | 123 | — | — | — | — | — |
+| FINAL-E03 | 2024 | — | — | — | — | — |
+| **Mean ± Std** | — | — | — | — | — | — |
+
+*(Reference best ablation: IMI AUPRC ~0.527, Arrhy F1 ~0.825 @ 15 epochs)*
+
+**Stage 6 final result**: _(pending)_

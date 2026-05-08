@@ -341,16 +341,25 @@ python scripts/02_train.py --config configs/experiments/aug_e04_lead_dropout.yam
 
 ---
 
-### Stage 4 Results (to be filled after running)
+### Stage 4 Results
 
 | Experiment | Augmentation | IMI AUROC | IMI AUPRC | IMI F1 | Arrhy macro F1 | Folder | Winner? |
 |------------|--------------|-----------|-----------|--------|----------------|--------|---------|
-| AUG-E01 | `MixUp` | — | — | — | — | — | |
-| AUG-E02 | `Random Crop` | — | — | — | — | — | |
-| AUG-E03 | `Noise + Warp`| — | — | — | — | — | |
-| AUG-E04 | `Lead Dropout`| — | — | — | — | — | |
+| AUG-E01 | `MixUp` | 0.944 | 0.497 | 0.494 | 0.807 | `run_20260508_071142_hybrid-tf-focal-aug-mxp` | |
+| AUG-E02 | `Random Crop` | 0.940 | 0.484 | 0.471 | 0.626 | `run_20260508_081931_hybrid-tf-focal-aug` | |
+| AUG-E03 | `Noise + Warp`| **0.949** | **0.516** | **0.527** | **0.825** | `run_20260508_092233_hybrid-tf-focal-aug` | ✅ |
+| AUG-E04 | `Lead Dropout`| 0.950 | 0.495 | 0.513 | 0.812 | `run_20260508_102608_hybrid-tf-focal-aug` | |
 
-**Stage 4 winner**: _(pending)_
+*(Reference Baseline LOSS-E03: IMI AUPRC 0.493, Arrhy F1 0.822)*
+
+**Stage 4 winner**: **AUG-E03** (`Noise + Warp`)
+
+**Analysis:**
+1. **AUG-E03 (Noise + Warp) is the clear winner**: Cả IMI F1 (0.527) và AUPRC (0.516) đều tăng vọt so với baseline, trong khi Arrhythmia F1 vẫn giữ vững ở mức 0.825. Việc thêm nhiễu rung đường cơ sở (Baseline Wander) và co giãn thời gian nhẹ (Time Warp) mô phỏng chính xác các nhiễu sinh lý học (nhịp thở, nhịp tim không đều), giúp mô hình tổng quát hóa tuyệt vời.
+2. **AUG-E02 (Random Crop) là một thảm họa**: Arrhythmia F1 sụp đổ xuống **0.626**. Tín hiệu điện tim phụ thuộc rất chặt chẽ vào khoảng cách thời gian giữa các sóng (P-QRS-T). Việc crop 80% rồi resize lại đồng nghĩa với việc "kéo giãn" tín hiệu một cách cực đoan, phá hủy hoàn toàn ý nghĩa sinh lý của nhịp tim.
+3. **AUG-E01 (MixUp) và AUG-E04 (Lead Dropout) không hiệu quả rõ rệt**: MixUp làm mờ ranh giới đặc trưng không gian tinh tế của IMI. Lead Dropout tăng nhẹ IMI AUROC nhưng lại làm giảm Arrhythmia F1 do làm mất đi các lead "bắt nhịp" quan trọng.
+
+→ **AUG-E03 config carries forward** to Stage 5.
 
 ---
 

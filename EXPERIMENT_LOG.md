@@ -361,8 +361,44 @@ python scripts/02_train.py --config configs/experiments/aug_e04_lead_dropout.yam
 
 → **AUG-E03 config carries forward** to Stage 5.
 
+## Stage 5: Sampling Strategy
+
+**Variable**: How batches are constructed from the training dataset.
+**Baseline inherited**: `SPLIT-E02` (random_grouped), `NORM-E01` (zscore), `LOSS-E03` (Focal+GradIso), `AUG-E03` (Noise+Warp).
+
+### Experiment Configs & Commands
+
+> Note: All Stage 5 configs reuse the same `data/processed_split_e02` folder.
+
+#### SAMP-E01 — Uniform Sampling (Baseline)
+Config: `configs/experiments/samp_e01_uniform.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/samp_e01_uniform.yaml
+```
+**Mechanism**: PyTorch default `RandomSampler`. Every patient has an equal chance of being selected in a batch, meaning minority classes (like IMI) will appear rarely.
+
 ---
 
-## Stage 5–6: (To be added after Stage 4 winner is determined)
+#### SAMP-E02 — Weighted Random Sampler
+Config: `configs/experiments/samp_e02_weighted.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/samp_e02_weighted.yaml
+```
+**Mechanism**: Uses PyTorch `WeightedRandomSampler`. Calculates weights inversely proportional to class frequencies, guaranteeing that minority class samples (like IMI) appear much more frequently in every batch.
+
+---
+
+### Stage 5 Results (to be filled after running)
+
+| Experiment | Sampling | IMI AUROC | IMI AUPRC | IMI F1 | Arrhy macro F1 | Folder | Winner? |
+|------------|----------|-----------|-----------|--------|----------------|--------|---------|
+| SAMP-E01 | `Uniform` | — | — | — | — | — | |
+| SAMP-E02 | `Weighted` | — | — | — | — | — | |
+
+**Stage 5 winner**: _(pending)_
+
+---
+
+## Stage 6: Architecture / Training Tweaks (To be added after Stage 5)
 
 

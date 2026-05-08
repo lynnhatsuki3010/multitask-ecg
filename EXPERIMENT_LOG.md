@@ -296,6 +296,64 @@ At first glance, it appears that adding advanced loss functions *decreased* perf
 
 ---
 
-## Stage 4–6: (To be added after Stage 3 winner is determined)
+## Stage 4: Data Augmentation
+
+**Variable**: How training data is perturbed to improve generalization.
+**Baseline inherited**: `SPLIT-E02` (`random_grouped`), `NORM-E01` (`zscore`), `LOSS-E03` (`Focal + GradIso`).
+
+### Experiment Configs & Commands
+
+> Note: All Stage 4 configs reuse the same `data/processed_split_e02` folder.
+
+#### AUG-E01 — MixUp (alpha=0.2)
+Config: `configs/experiments/aug_e01_mixup.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/aug_e01_mixup.yaml
+```
+**Mechanism**: Linearly interpolates pairs of signals and their one-hot labels. Smooths decision boundaries.
+
+---
+
+#### AUG-E02 — Random Crop / Shift
+Config: `configs/experiments/aug_e02_random_crop.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/aug_e02_random_crop.yaml
+```
+**Mechanism**: Crops a random 80% window of the 10-second signal and pads/resizes it back. Forces translation invariance.
+
+---
+
+#### AUG-E03 — Baseline Wander + Time Warp (Noise)
+Config: `configs/experiments/aug_e03_noise_warp.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/aug_e03_noise_warp.yaml
+```
+**Mechanism**: Injects low-frequency sinusoidal drift (simulating respiration/movement) and stretches the time axis. Tests robustness to physical sensor noise.
+
+---
+
+#### AUG-E04 — Lead Dropout
+Config: `configs/experiments/aug_e04_lead_dropout.yaml`
+```bash
+python scripts/02_train.py --config configs/experiments/aug_e04_lead_dropout.yaml
+```
+**Mechanism**: Randomly zeroes out 1-2 leads during training. Forces the model to learn redundant spatial representations instead of relying on a single "hero" lead.
+
+---
+
+### Stage 4 Results (to be filled after running)
+
+| Experiment | Augmentation | IMI AUROC | IMI AUPRC | IMI F1 | Arrhy macro F1 | Folder | Winner? |
+|------------|--------------|-----------|-----------|--------|----------------|--------|---------|
+| AUG-E01 | `MixUp` | — | — | — | — | — | |
+| AUG-E02 | `Random Crop` | — | — | — | — | — | |
+| AUG-E03 | `Noise + Warp`| — | — | — | — | — | |
+| AUG-E04 | `Lead Dropout`| — | — | — | — | — | |
+
+**Stage 4 winner**: _(pending)_
+
+---
+
+## Stage 5–6: (To be added after Stage 4 winner is determined)
 
 

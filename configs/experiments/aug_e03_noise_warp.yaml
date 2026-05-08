@@ -1,0 +1,124 @@
+# AUG-E03: Baseline Wander + Time Warp
+# Baseline inherited: SPLIT-E02, NORM-E01, LOSS-E03
+#
+# TRAIN CMD:
+#   python scripts/02_train.py --config configs/experiments/aug_e03_noise_warp.yaml
+# BRANCH: STAGE4-AUG
+
+paths:
+  raw_data: "data/raw/PTB-XL"
+  processed: "data/processed_split_e02" # Reusing data
+  splits: "data/splits_split_e02"
+  checkpoints: "checkpoints"
+
+dataset:
+  sampling_rate: 500
+  signal_length: 5000
+  num_leads: 12
+  label_threshold: 50
+  label_threshold_overrides:
+    IMI: 80
+  normal_label: NORM
+  normal_mode: exclusive
+  split_method: random_grouped
+  split_group_key: patient_id
+  split_seed: 42
+  split_train_ratio: 0.70
+  split_val_ratio: 0.15
+  split_test_ratio: 0.15
+  split_num_folds: 10
+  split_test_fold_index: 0
+  split_val_fold_index: null
+  split_stratify_label: null
+  test_fold: 10
+  val_fold: 9
+
+labels:
+  - {name: NORM,  task: normal,     index: 0}
+  - {name: AFIB,  task: arrhythmia, index: 1}
+  - {name: STACH, task: arrhythmia, index: 2}
+  - {name: PVC,   task: arrhythmia, index: 3}
+  - {name: AFLT,  task: arrhythmia, index: 4}
+  - {name: IMI,   task: mi,         index: 5}
+  - {name: ASMI,  task: mi,         index: 6}
+
+label_groups:
+  arrhythmia: [0, 1, 2, 3, 4]
+  mi: [5, 6]
+
+hrv:
+  enabled: false
+
+preprocessing:
+  bandpass_low: 0.5
+  bandpass_high: 40.0
+  notch_freq: 50.0
+  normalize: zscore
+
+model:
+  architecture: hybrid_transformer
+  d_model: 256
+  stem_dim: 96
+  downsample_factor: 20
+  nhead: 8
+  num_encoder_layers: 4
+  dim_feedforward: 512
+  cnn_stage_dims: [128, 192, 256]
+  head_hidden_dim: 128
+  mi_branch_dim: 128
+  dropout: 0.15
+  mi_gradient_scale: 0.3
+  hrv_detach: false
+
+augmentation:
+  aug_lead_dropout: false
+  aug_random_crop: false
+  aug_baseline_wander: true     # ← TEST VARIABLE
+  aug_time_warp: true           # ← TEST VARIABLE
+  aug_mixup: false
+  mixup_alpha: 0.2
+
+training:
+  batch_size: 96
+  epochs: 15
+  freeze_backbone_at_epoch: -1
+  lr: 1.0e-4
+  weight_decay: 1.0e-3
+  mi_lr_multiplier: 1.0
+  scheduler: cosine
+  warmup_epochs: 2
+  loss_weights:
+    arrhythmia: 1.0
+    mi: 1.0
+    imi: 1.0
+    asmi: 1.0
+    hrv: 0.0
+  label_smoothing: 0.0
+  hrv_loss: smooth_l1
+  use_pos_weight: false
+  use_focal: true
+  focal_gamma: 2.0
+  focal_alpha: 0.25
+  max_pos_weight: 30.0
+  pos_weight_power: 0.75
+  weighted_sampler: false
+  seed: 42
+  num_workers: 0
+  pin_memory: true
+  save_every: 5
+  early_stopping_patience: 15
+  monitor_metric: imi_auprc
+
+eval:
+  metrics: [auroc, auprc, f1, accuracy]
+  threshold: 0.5
+  val_tune_thresholds_every: 0
+  threshold_search:
+    min_threshold: 0.15
+    min_pos_count: 20
+    max_rare_threshold: 0.4
+    class_beta:
+      PVC: 1.0
+      AFLT: 2.0
+      IMI: 1.5
+      ASMI: 1.2

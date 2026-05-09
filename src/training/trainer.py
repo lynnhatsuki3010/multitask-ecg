@@ -228,6 +228,18 @@ class Trainer:
                 "eval.val_tune_thresholds_every > 0 (per-class threshold search on val each N epochs)."
             )
 
+        # SWA Setup
+        self.use_swa = self.cfg.get("training", {}).get("use_swa", False)
+        self.swa_start_epoch = self.cfg.get("training", {}).get("swa_start_epoch", max(1, self.epochs - 5))
+        if self.use_swa:
+            from torch.optim.swa_utils import AveragedModel
+            self.swa_model = AveragedModel(self.model)
+        else:
+            self.swa_model = None
+
+        # TTA Setup
+        self.use_tta = self.cfg.get("eval", {}).get("use_tta", False)
+
     MONITOR_ALIASES = {
         "mean_auroc": ["auroc/arrhy/macro", "auroc/mi/macro"],
         "macro_f1": ["f1/arrhy/macro", "f1/mi/macro"],
@@ -315,7 +327,19 @@ class Trainer:
                     labels = lam * labels + (1 - lam) * labels[index]
                     hrv    = lam * hrv + (1 - lam) * hrv[index]
 
-                preds = self.model(signal)
+                if not train and getattr(self, "use_tta", False):
+                    preds1 = self.model(signal)
+                    signal2 = torch.roll(signal, shifts=-25, dims=-1)
+                    preds2 = self.model(signal2)
+                    signal3 = torch.roll(signal, shifts=25, dims=-1)
+                    preds3 = self.model(signal3)
+                    
+                    preds = {}
+                    for k in preds1:
+                        preds[k] = (preds1[k] + preds2[k] + preds3[k]) / 3.0
+                else:
+                    preds = self.model(signal)
+
                 targets = self._split_labels(labels)
                 targets["hrv"]       = hrv
                 targets["hrv_valid"] = hrv_valid
@@ -417,6 +441,9 @@ class Trainer:
             if self.scheduler is not None and not getattr(self, "_step_scheduler_per_batch", False):
                 self.scheduler.step()
 
+            if self.use_swa and epoch >= self.swa_start_epoch:
+                self.swa_model.update_parameters(self.model)
+
             elapsed = time.time() - t0
             self.history["train"].append(train_metrics)
             self.history["val"].append(val_metrics)
@@ -510,6 +537,34 @@ class Trainer:
             print(f"\n{'='*60}")
             print(f"  Training complete. Best {self._monitor_label()}: {self.best_monitor_value:.4f}")
             print(f"{'='*60}\n")
+            
+        if self.use_swa:
+            print("\n=== SWA Optimization ===")
+            print("Updating BatchNorm statistics for SWA model...")
+            from torch.optim.swa_utils import update_bn
+            update_bn(self.train_loader, self.swa_model, device=self.device)
+            
+            print("Evaluating SWA model on validation set...")
+            original_model = self.model
+            self.model = self.swa_model
+            swa_metrics = self._run_epoch(self.val_loader, train=False)
+            self.model = original_model
+            
+            if self.checkpoint_dir:
+                swa_path = os.path.join(self.checkpoint_dir, "swa_model.pt")
+                torch.save(self.swa_model.state_dict(), swa_path)
+                print(f"SWA model saved to: {swa_path}")
+                
+                with open(os.path.join(self.checkpoint_dir, "swa_metrics.json"), "w") as f:
+                    json.dump(swa_metrics, f, indent=4)
+                    
+            print("[SWA Validation Metrics]")
+            for k, v in swa_metrics.items():
+                if "macro" in k or "IMI" in k:
+                    print(f"  {k}: {v:.4f}")
+            print("=======================\n")
+            
+        return self.best_monitor_value
 
     def find_thresholds(
         self,

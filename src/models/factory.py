@@ -27,6 +27,7 @@ def build_model(
     d_model = int(model_cfg.get("d_model", 256))
     stem_dim = int(model_cfg.get("stem_dim", max(64, d_model // 3)))
     dropout = float(model_cfg.get("dropout", 0.15))
+    use_se = bool(model_cfg.get("use_se", False))
     downsample_factor = int(model_cfg.get("downsample_factor", model_cfg.get("patch_size", 20)))
 
     if architecture == "cnn":
@@ -37,6 +38,7 @@ def build_model(
             downsample_factor=downsample_factor,
             stage_dims=_parse_stage_dims(model_cfg, d_model),
             dropout=dropout,
+            use_se=use_se,
         )
     elif architecture == "hybrid_transformer":
         backbone = HybridTransformerBackbone(
@@ -49,6 +51,7 @@ def build_model(
             num_encoder_layers=int(model_cfg.get("num_encoder_layers", 4)),
             dim_feedforward=int(model_cfg.get("dim_feedforward", d_model * 2)),
             dropout=dropout,
+            use_se=use_se,
         )
     else:
         raise ValueError(

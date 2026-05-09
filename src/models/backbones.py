@@ -47,6 +47,30 @@ class ConvNormAct(nn.Module):
         return self.block(x)
 
 
+class SEBlock1D(nn.Module):
+    """
+    Squeeze-and-Excitation block for 1D signals.
+    Automatically learns channel-wise attention to enhance informative features
+    and suppress noisy or irrelevant ones.
+    """
+    def __init__(self, channels: int, reduction: int = 16) -> None:
+        super().__init__()
+        self.squeeze = nn.AdaptiveAvgPool1d(1)
+        reduced_channels = max(1, channels // reduction)
+        self.excitation = nn.Sequential(
+            nn.Linear(channels, reduced_channels, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(reduced_channels, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, t = x.size()
+        y = self.squeeze(x).view(b, c)
+        y = self.excitation(y).view(b, c, 1)
+        return x * y.expand_as(x)
+
+
 class ResidualConvBlock(nn.Module):
     """Residual 1D block with optional downsampling."""
 
@@ -57,6 +81,7 @@ class ResidualConvBlock(nn.Module):
         kernel_size: int,
         stride: int = 1,
         dropout: float = 0.0,
+        use_se: bool = False,
     ) -> None:
         super().__init__()
         self.main = nn.Sequential(
@@ -78,10 +103,13 @@ class ResidualConvBlock(nn.Module):
             if (in_channels != out_channels or stride != 1)
             else nn.Identity()
         )
+        self.se = SEBlock1D(out_channels) if use_se else nn.Identity()
         self.activation = nn.GELU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.activation(self.main(x) + self.shortcut(x))
+        out = self.main(x)
+        out = self.se(out)
+        return self.activation(out + self.shortcut(x))
 
 
 class AttentionPooling(nn.Module):
@@ -173,6 +201,7 @@ class MorphologyConvFrontEnd(nn.Module):
         stage_dims: List[int],
         downsample_factor: int,
         dropout: float,
+        use_se: bool = False,
     ) -> None:
         super().__init__()
         if not stage_dims:
@@ -192,10 +221,10 @@ class MorphologyConvFrontEnd(nn.Module):
         in_dim = stage_dims[0]
         for idx, out_dim in enumerate(stage_dims):
             kernel = kernels[min(idx, len(kernels) - 1)]
-            blocks.append(ResidualConvBlock(in_dim, out_dim, kernel_size=kernel, stride=strides[idx], dropout=dropout))
+            blocks.append(ResidualConvBlock(in_dim, out_dim, kernel_size=kernel, stride=strides[idx], dropout=dropout, use_se=use_se))
             if idx >= 1:
                 # A second block per stage stabilizes morphology extraction without changing sequence length.
-                blocks.append(ResidualConvBlock(out_dim, out_dim, kernel_size=kernel, dropout=dropout))
+                blocks.append(ResidualConvBlock(out_dim, out_dim, kernel_size=kernel, dropout=dropout, use_se=use_se))
             in_dim = out_dim
         self.stages = nn.Sequential(*blocks)
 
@@ -216,6 +245,7 @@ class CNNBackbone(nn.Module):
         downsample_factor: int = 20,
         stage_dims: List[int] | None = None,
         dropout: float = 0.1,
+        use_se: bool = False,
     ) -> None:
         super().__init__()
         stage_dims = stage_dims or [128, 192, d_model]
@@ -232,7 +262,7 @@ class CNNBackbone(nn.Module):
         stages = []
         in_dim = stage_dims[0]
         for out_dim in stage_dims:
-            stages.append(ResidualConvBlock(in_dim, out_dim, kernel_size=7, dropout=dropout))
+            stages.append(ResidualConvBlock(in_dim, out_dim, kernel_size=7, dropout=dropout, use_se=use_se))
             in_dim = out_dim
         self.stages = nn.Sequential(*stages)
         self.sequence_proj = nn.Conv1d(stage_dims[-1], d_model, kernel_size=1, bias=False)
@@ -264,6 +294,7 @@ class HybridTransformerBackbone(nn.Module):
         num_encoder_layers: int = 4,
         dim_feedforward: int = 512,
         dropout: float = 0.1,
+        use_se: bool = False,
     ) -> None:
         super().__init__()
         self.output_dim = d_model
@@ -274,6 +305,7 @@ class HybridTransformerBackbone(nn.Module):
             stage_dims=stage_dims,
             downsample_factor=downsample_factor,
             dropout=dropout,
+            use_se=use_se,
         )
         self.sequence_proj = nn.Conv1d(stage_dims[-1], d_model, kernel_size=1, bias=False)
         self.pre_transformer_norm = nn.LayerNorm(d_model)

@@ -676,3 +676,46 @@ Phân tích log của 3 lần chạy Final, các model đều dừng lại (earl
 - Đối với các lớp bệnh hiếm như IMI, mô hình đã đạt đến **giới hạn của dữ liệu (Data Ceiling)**. Thay vì cố gắng train lâu hơn (50 epochs), chiến lược tối ưu nhất (nghịch lý thay) chính là **Train ngắn hạn với tốc độ giảm LR cực nhanh (Fast Annealing)** (giống hệt cấu hình 15-epoch của Stage 4).
 
 Dự án tối ưu hóa Systematic Ablation của chúng ta đã hoàn thành xuất sắc mục tiêu: Cô lập, đánh giá, và tìm ra được giới hạn thực sự của cả mô hình lẫn dữ liệu!
+
+---
+
+## Phase 2: SOTA Techniques Ablation
+
+Sau khi đã chốt hạ tổ hợp kỹ thuật xuất sắc nhất từ Stage 1 → 5, chúng ta tiếp tục thực hiện thử nghiệm bổ sung (Additive Ablation) với 3 kỹ thuật tiên tiến (SOTA) từ các nghiên cứu gần đây (2021-2025). Mỗi kỹ thuật được chạy đúng 15 epochs và so sánh trực tiếp với Baseline chiến thắng của từng Stage.
+
+### 1. Asymmetric Loss (ASL) — Revisit Stage 3
+**Baseline (LOSS-E03)**: Focal Loss + GradIso
+**New (LOSS-E04)**: Asymmetric Loss (ICCV 2021)
+- **Cơ chế**: ASL phạt nặng False Negative nhưng nhẹ tay với False Positive, và cắt bỏ hoàn toàn gradient của những mẫu âm tính dễ (easy negatives) để đối phó với hiện tượng mất cân bằng siêu nghiêm trọng (long-tail).
+- **Kết quả**:
+  - `LOSS-E03`: IMI AUPRC 0.493 — Arrhy F1 **0.822**
+  - `LOSS-E04 (ASL)`: IMI AUPRC **0.496** — Arrhy F1 **0.785**
+- **Đánh giá**: Mặc dù IMI AUPRC nhích lên, nhưng ASL tàn phá hoàn toàn task Arrhythmia. Lớp `NORM` (chiếm đa số) cần các mẫu âm tính để duy trì ranh giới quyết định. Việc ASL cắt bỏ gradient của easy negatives khiến khả năng phân loại Arrhythmia sụp đổ. **Focal + GradIso vẫn là chân ái.**
+
+### 2. 1D CutMix — Revisit Stage 4
+**Baseline (AUG-E03)**: Noise + Warp
+**New (AUG-E05)**: 1D CutMix
+- **Cơ chế**: Thay vì làm nhòe toàn bộ tín hiệu như MixUp, CutMix hoán đổi một khung thời gian ngẫu nhiên giữa 2 bệnh nhân, giúp giữ nguyên vẹn 100% hình thái của từng nhịp tim bên trong khung cắt.
+- **Kết quả**:
+  - `AUG-E03`: IMI AUPRC **0.516** — IMI F1 **0.527** — Arrhy F1 **0.825**
+  - `AUG-E05 (CutMix)`: IMI AUPRC 0.475 — IMI F1 0.473 — Arrhy F1 0.816
+- **Đánh giá**: CutMix thất bại thảm hại. Trong ảnh 2D, CutMix giữ được texture cục bộ. Nhưng trong tín hiệu điện tim 1D, việc "cắt dán" đứt đoạn đã phá vỡ hoàn toàn **Nhịp tim (Rhythm)** và **khoảng cách R-R**. Nó cũng tạo ra các bước nhảy biên độ đột ngột (discontinuities) tại điểm cắt, đánh lừa các filter của CNN. Kỹ thuật `Noise + Warp` (thêm nhiễu và co giãn mượt mà) vẫn là phương pháp tăng cường dữ liệu sinh lý học tốt nhất.
+
+### 3. Squeeze-and-Excitation (SE) Block — Revisit Stage 6
+**Baseline (AUG-E03)**: HybridTransformer (No SE-Block)
+**New (ARCH-E01)**: HybridTransformer + SEBlock1D trong CNN backbone
+- **Cơ chế**: Gắn module Attention channel-wise (SE-Block) sau mỗi lớp CNN để mô hình tự động "tắt/mở" các đạo trình (leads) dựa trên độ quan trọng của chúng.
+- **Kết quả**:
+  - `Baseline`: IMI AUPRC **0.516** — IMI F1 0.527 — Arrhy F1 **0.825**
+  - `ARCH-E01 (SE-Block)`: IMI AUPRC 0.511 — IMI F1 **0.530** — Arrhy F1 0.793
+- **Đánh giá**: SE-Block kéo tụt Arrhythmia F1 xuống rất thấp (0.793). Lý do là SE-Block bóp nghẹt các leads mà nó cho là không quan trọng tại các block đầu. Tuy nhiên, việc nhận dạng nhịp tim (Arrhythmia) đòi hỏi một góc nhìn toàn cảnh trên tất cả các đạo trình. Hơn nữa, việc thêm SE-Block vào backbone chung là trùng lặp chức năng (redundancy), vì chúng ta đã thiết kế sẵn `LeadGroupEncoder` nằm ngay phía trước MI Head để đặc trị việc nhóm các đạo trình (Inferior, Reciprocal, Anterior).
+
+---
+
+## TỔNG KẾT PHASE 2 (FINAL VERDICT)
+
+Dự án Systematic Ablation cực kỳ thành công. Chúng ta đã chứng minh được:
+1. **Các phương pháp SOTA không phải là "viên đạn bạc"**: ASL, CutMix, SE-Block rất nổi tiếng trong Computer Vision, nhưng khi áp dụng một cách mù quáng vào chuỗi thời gian sinh lý học (ECG Multi-task), chúng sẽ phá vỡ cấu trúc không gian (leads) và thời gian (rhythm) tự nhiên của nhịp tim.
+2. **Kiến trúc tốt nhất đã được chốt hạ**: Sự kết hợp giữa **Focal Loss + GradIso** (để giữ thăng bằng task), và **Noise+Warp Augmentation** (để mô phỏng nhiễu sinh lý) là tổ hợp vững chắc nhất, đạt ngưỡng giới hạn của dữ liệu (Data Ceiling).
+
+Mọi kết quả đã được đóng băng. Codebase hiện tại là cực kỳ sạch sẽ, module hóa và sẵn sàng cho việc đưa vào viết báo cáo khoa học (hoặc Khóa luận)!

@@ -302,9 +302,11 @@ class Trainer:
                 hrv       = batch["hrv"].to(self.device).float()         # (B, 3)
                 hrv_valid = batch["hrv_valid"].to(self.device)   # (B,) bool
 
-                # --- MixUp Augmentation ---
+                # --- MixUp / CutMix Augmentation ---
                 aug_mixup = self.cfg.get("augmentation", {}).get("aug_mixup", False)
                 mixup_alpha = float(self.cfg.get("augmentation", {}).get("mixup_alpha", 0.2))
+                aug_cutmix = self.cfg.get("augmentation", {}).get("aug_cutmix", False)
+                cutmix_alpha = float(self.cfg.get("augmentation", {}).get("cutmix_alpha", 0.2))
                 
                 if train and aug_mixup and mixup_alpha > 0:
                     lam = np.random.beta(mixup_alpha, mixup_alpha)
@@ -312,6 +314,27 @@ class Trainer:
                     index = torch.randperm(signal.size(0)).to(self.device)
                     
                     signal = lam * signal + (1 - lam) * signal[index]
+                    labels = lam * labels + (1 - lam) * labels[index]
+                    hrv    = lam * hrv + (1 - lam) * hrv[index]
+                elif train and aug_cutmix and cutmix_alpha > 0:
+                    lam = np.random.beta(cutmix_alpha, cutmix_alpha)
+                    B, C, T = signal.size()
+                    index = torch.randperm(B).to(self.device)
+                    
+                    # Compute cut window
+                    cut_ratio = np.sqrt(1. - lam)
+                    cut_len = int(T * cut_ratio)
+                    
+                    cx = np.random.randint(T)
+                    bbx1 = np.clip(cx - cut_len // 2, 0, T)
+                    bbx2 = np.clip(cx + cut_len // 2, 0, T)
+                    
+                    # Update lambda exactly based on actual cut length
+                    lam = 1 - ((bbx2 - bbx1) / T)
+                    
+                    signal_clone = signal.clone()
+                    signal[:, :, bbx1:bbx2] = signal_clone[index, :, bbx1:bbx2]
+                    
                     labels = lam * labels + (1 - lam) * labels[index]
                     hrv    = lam * hrv + (1 - lam) * hrv[index]
 
@@ -349,7 +372,7 @@ class Trainer:
 
                 # Binarize labels for metric calculation (sklearn AUROC requires binary targets)
                 metric_targets = targets
-                if train and aug_mixup and mixup_alpha > 0:
+                if train and ((aug_mixup and mixup_alpha > 0) or (aug_cutmix and cutmix_alpha > 0)):
                     metric_targets = {
                         "arrhythmia": (targets["arrhythmia"] >= 0.5).float(),
                         "mi": (targets["mi"] >= 0.5).float(),

@@ -1,13 +1,13 @@
-# INF-E01: SWA (Stochastic Weight Averaging) & TTA (Test-Time Augmentation)
+# INF-E02: TTA (Test-Time Augmentation)
 # Baseline inherited: SPLIT-E02, NORM-E01, LOSS-E03, AUG-E03, SAMP-E01
 #
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/inf_e01_swa_tta.yaml
+#   python scripts/02_train.py --config configs/experiments/inf_e02_tta.yaml
 # BRANCH: STAGE7-TTA
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_split_e02" # Reusing data
+  processed: "data/processed_split_e02"
   splits: "data/splits_split_e02"
   checkpoints: "checkpoints"
 
@@ -110,14 +110,14 @@ training:
   save_every: 5
   early_stopping_patience: 15
   monitor_metric: imi_auprc
-  use_swa: true            # ← TEST VARIABLE
-  swa_start_epoch: 10
+  
+  use_swa: false           # ← DISABLED
 
 eval:
   metrics: [auroc, auprc, f1, accuracy]
   threshold: 0.5
   val_tune_thresholds_every: 0
-  use_tta: true            # ← TEST VARIABLE
+  use_tta: true            # ← TEST VARIABLE: TTA ONLY
   threshold_search:
     min_threshold: 0.15
     min_pos_count: 20

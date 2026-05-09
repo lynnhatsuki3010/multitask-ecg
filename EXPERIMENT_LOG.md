@@ -349,6 +349,7 @@ python scripts/02_train.py --config configs/experiments/aug_e04_lead_dropout.yam
 | AUG-E02 | `Random Crop` | 0.940 | 0.484 | 0.471 | 0.626 | `run_20260508_081931_hybrid-tf-focal-aug` | |
 | AUG-E03 | `Noise + Warp`| **0.949** | **0.516** | **0.527** | **0.825** | `run_20260508_092233_hybrid-tf-focal-aug` | ✅ |
 | AUG-E04 | `Lead Dropout`| 0.950 | 0.495 | 0.513 | 0.812 | `run_20260508_102608_hybrid-tf-focal-aug` | |
+| AUG-E05 | `1D CutMix` | 0.941 | 0.475 | 0.473 | 0.816 | `run_20260509_124156_hybrid-tf-focal-aug` | |
 
 *(Reference Baseline LOSS-E03: IMI AUPRC 0.493, Arrhy F1 0.822)*
 
@@ -358,6 +359,7 @@ python scripts/02_train.py --config configs/experiments/aug_e04_lead_dropout.yam
 1. **AUG-E03 (Noise + Warp) is the clear winner**: Cả IMI F1 (0.527) và AUPRC (0.516) đều tăng vọt so với baseline, trong khi Arrhythmia F1 vẫn giữ vững ở mức 0.825. Việc thêm nhiễu rung đường cơ sở (Baseline Wander) và co giãn thời gian nhẹ (Time Warp) mô phỏng chính xác các nhiễu sinh lý học (nhịp thở, nhịp tim không đều), giúp mô hình tổng quát hóa tuyệt vời.
 2. **AUG-E02 (Random Crop) là một thảm họa**: Arrhythmia F1 sụp đổ xuống **0.626**. Tín hiệu điện tim phụ thuộc rất chặt chẽ vào khoảng cách thời gian giữa các sóng (P-QRS-T). Việc crop 80% rồi resize lại đồng nghĩa với việc "kéo giãn" tín hiệu một cách cực đoan, phá hủy hoàn toàn ý nghĩa sinh lý của nhịp tim.
 3. **AUG-E01 (MixUp) và AUG-E04 (Lead Dropout) không hiệu quả rõ rệt**: MixUp làm mờ ranh giới đặc trưng không gian tinh tế của IMI. Lead Dropout tăng nhẹ IMI AUROC nhưng lại làm giảm Arrhythmia F1 do làm mất đi các lead "bắt nhịp" quan trọng.
+4. **Phase 2 SOTA — 1D CutMix (AUG-E05)**: Mặc dù loss giảm mượt hơn trên tập train (ít overfit hơn), nhưng test metrics lại kém (AUPRC 0.475). Trong ảnh (2D), CutMix giữ được texture cục bộ. Nhưng trong tín hiệu điện tim (1D), việc "cắt dán" phá vỡ hoàn toàn tính liên tục của nhịp tim (Rhythm) và khoảng cách R-R, làm giảm mạnh khả năng nhận diện Arrhythmia (0.816). Hơn nữa, nó tạo ra các bước nhảy biên độ đột ngột (discontinuities) tại điểm cắt, đánh lừa các filter của CNN.
 
 → **AUG-E03 config carries forward** to Stage 5.
 

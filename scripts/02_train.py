@@ -913,6 +913,10 @@ def main():
     use_focal      = cfg["training"].get("use_focal",      False)
     focal_gamma    = cfg["training"].get("focal_gamma",    2.0)
     focal_alpha    = cfg["training"].get("focal_alpha",    0.25)
+    use_asl        = cfg["training"].get("use_asl",        False)
+    asl_gamma_neg  = cfg["training"].get("asl_gamma_neg",  4.0)
+    asl_gamma_pos  = cfg["training"].get("asl_gamma_pos",  1.0)
+    asl_clip       = cfg["training"].get("asl_clip",       0.05)
     smoothing      = cfg["training"].get("label_smoothing", 0.0)
     hrv_loss       = cfg["training"].get("hrv_loss", "smooth_l1")
     max_pos_weight = float(cfg["training"].get("max_pos_weight", 50.0))
@@ -943,6 +947,7 @@ def main():
         print("\n► pos_weight disabled (use_pos_weight=false)")
 
     print(f"  use_focal: {use_focal}  focal_gamma: {focal_gamma}  focal_alpha: {focal_alpha}")
+    print(f"  use_asl: {use_asl}  asl_gamma_neg: {asl_gamma_neg}  asl_gamma_pos: {asl_gamma_pos}  asl_clip: {asl_clip}")
     print(
         f"  label_smoothing: {smoothing}  hrv_loss: {hrv_loss}  "
         f"max_pos_weight: {max_pos_weight}  pos_weight_power: {pos_weight_power}"
@@ -960,6 +965,10 @@ def main():
         use_focal             = use_focal,
         focal_gamma           = focal_gamma,
         focal_alpha           = focal_alpha,
+        use_asl               = use_asl,
+        asl_gamma_neg         = asl_gamma_neg,
+        asl_gamma_pos         = asl_gamma_pos,
+        asl_clip              = asl_clip,
         label_smoothing       = smoothing,
         hrv_loss_type         = hrv_loss,
     )

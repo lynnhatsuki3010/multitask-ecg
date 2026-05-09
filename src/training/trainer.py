@@ -587,15 +587,24 @@ class Trainer:
 
         with torch.no_grad():
             for batch in loader:
-                signal = batch["signal"].to(self.device)
-                labels = batch["labels"].to(self.device)
-                preds  = self.model(signal)
+                signal = batch["signal"].to(self.device).float()
+                labels = batch["labels"].to(self.device).float()
+                
+                if getattr(self, "use_tta", False):
+                    preds1 = self.model(signal)
+                    preds2 = self.model(torch.roll(signal, shifts=-25, dims=-1))
+                    preds3 = self.model(torch.roll(signal, shifts=25, dims=-1))
+                    preds = {}
+                    for k in preds1:
+                        preds[k] = (preds1[k] + preds2[k] + preds3[k]) / 3.0
+                else:
+                    preds = self.model(signal)
+                    
                 targets = self._split_labels(labels)
 
-                import torch.nn.functional as F
-                a_scores.append(F.sigmoid(preds["arrhythmia"]).cpu().numpy())
+                a_scores.append(torch.sigmoid(preds["arrhythmia"]).cpu().numpy())
                 a_trues.append(targets["arrhythmia"].cpu().numpy())
-                mi_scores.append(F.sigmoid(preds["mi"]).cpu().numpy())
+                mi_scores.append(torch.sigmoid(preds["mi"]).cpu().numpy())
                 mi_trues.append(targets["mi"].cpu().numpy())
 
         a_score = np.concatenate(a_scores)

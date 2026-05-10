@@ -719,3 +719,16 @@ Dự án Systematic Ablation cực kỳ thành công. Chúng ta đã chứng min
 2. **Kiến trúc tốt nhất đã được chốt hạ**: Sự kết hợp giữa **Focal Loss + GradIso** (để giữ thăng bằng task), và **Noise+Warp Augmentation** (để mô phỏng nhiễu sinh lý) là tổ hợp vững chắc nhất, đạt ngưỡng giới hạn của dữ liệu (Data Ceiling).
 
 Mọi kết quả đã được đóng băng. Codebase hiện tại là cực kỳ sạch sẽ, module hóa và sẵn sàng cho việc đưa vào viết báo cáo khoa học (hoặc Khóa luận)!
+
+---
+
+## Phase 3: Inference & Optimization SOTA (Stage 7 & 8)
+
+### Stage 7.1: Stochastic Weight Averaging (SWA)
+**Baseline (AUG-E03)**: Noise + Warp (15 epochs, Fast Cosine Annealing)
+**New (INF-E01)**: SWA (Averaging weights từ epoch 10 đến 15)
+- **Cơ chế**: Thay vì lấy checkpoint tốt nhất, ta lấy trung bình cộng trọng số của 5 epochs cuối. Mục tiêu là tìm một điểm cực tiểu bằng phẳng (flat minimum) để tăng khả năng tổng quát hóa trên tập Test.
+- **Kết quả Validation**:
+  - `Best Epoch (No SWA)`: IMI AUPRC **0.5876** — Arrhy F1 **0.7966**
+  - `SWA Model`: IMI AUPRC 0.5830 — Arrhy F1 0.7704
+- **Đánh giá**: SWA **thất bại** và làm giảm mạnh hiệu suất (đặc biệt là Arrhythmia giảm từ ~0.80 xuống 0.77). Lý do rất rõ ràng: Chúng ta đang dùng lịch trình giảm Learning Rate cực nhanh (`Cosine Annealing` về 0 tại epoch 15). Tại epoch 15, mô hình đã chìm vào một điểm cực tiểu vô cùng sắc nét và tối ưu. Việc lấy trung bình nó với các epochs 10-14 (lúc LR vẫn còn cao và mô hình còn đang dao động) đã vô tình "kéo ngược" mô hình ra khỏi vùng cực tiểu này, làm mờ đi các ranh giới phân loại chính xác. SWA không phải là một giải pháp "ăn sẵn" nếu ta đang dùng Fast Annealing.

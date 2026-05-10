@@ -719,3 +719,21 @@ Dự án Systematic Ablation cực kỳ thành công. Chúng ta đã chứng min
 2. **Kiến trúc tốt nhất đã được chốt hạ**: Sự kết hợp giữa **Focal Loss + GradIso** (để giữ thăng bằng task), và **Noise+Warp Augmentation** (để mô phỏng nhiễu sinh lý) là tổ hợp vững chắc nhất, đạt ngưỡng giới hạn của dữ liệu (Data Ceiling).
 
 Mọi kết quả đã được đóng băng. Codebase hiện tại là cực kỳ sạch sẽ, module hóa và sẵn sàng cho việc đưa vào viết báo cáo khoa học (hoặc Khóa luận)!
+
+---
+
+## Phase 3: Inference & Optimization SOTA (Stage 7 & 8)
+
+*(Note: Stage 7 TTA/SWA results are logged in STAGE7-TTA branch).*
+
+### Stage 8: Sharpness-Aware Minimization (SAM)
+**Baseline (AUG-E03 / STAGE6-FINAL)**: AdamW Optimizer.
+**New (OPT-E01)**: SAM Optimizer (AdamW base, ρ=0.05).
+- **Cơ chế**: Ép mô hình tìm các điểm cực tiểu bằng phẳng (flat minima) bằng cách thêm nhiễu (adversarial perturbation) vào trọng số trước khi cập nhật gradient.
+- **Kết quả trên tập Test**:
+  - `Baseline (AdamW)`: IMI AUPRC **0.516** — IMI F1 **0.527** — Arrhy F1 **0.825**
+  - `SAM Model`: IMI AUPRC 0.510 — IMI F1 0.511 — Arrhy F1 0.793
+- **Đánh giá (Cực kỳ thú vị)**: SAM **thất bại** trên các lớp bệnh thiểu số cực đoan (IMI, AFLT).
+  - Bằng chứng 1: SAM làm tăng F1 của 4/5 lớp Arrhythmia (đều là các lớp nhiều dữ liệu). Nhưng lớp AFLT (chỉ có 13 mẫu Test) lại bị "bốc hơi" F1 từ 0.69 xuống 0.49 do Precision rớt thê thảm.
+  - Bằng chứng 2: IMI AUPRC rớt từ 0.516 xuống 0.510.
+  - **Lý do**: Với bài toán Long-tail Imbalance (Mất cân bằng đuôi dài), ranh giới quyết định (decision boundary) để khoanh vùng các bệnh hiếm bắt buộc phải "hẹp và sắc nhọn" (sharp). Khi SAM cố tình san phẳng các hố Loss, nó vô tình "ủi phẳng" luôn cả những ranh giới mong manh này, khiến mô hình nhầm lẫn bệnh hiếm với bệnh phổ biến. SAM tuyệt vời cho dữ liệu cân bằng, nhưng lại là liều thuốc độc cho dữ liệu siêu mất cân bằng nếu không có biến thể Class-Aware SAM!

@@ -148,7 +148,14 @@ class Trainer:
         ]
         # Remove empty groups
         param_groups = [g for g in param_groups if len(g["params"]) > 0]
-        self.optimizer = AdamW(param_groups)
+        
+        self.use_sam = train_cfg.get("use_sam", False)
+        if self.use_sam:
+            from src.training.sam import SAM
+            self.optimizer = SAM(param_groups, base_optimizer=AdamW, rho=train_cfg.get("sam_rho", 0.05))
+            print("  [Optimizer] Enabled Sharpness-Aware Minimization (SAM).")
+        else:
+            self.optimizer = AdamW(param_groups)
 
         n_mi = len(mi_decay) + len(mi_nodecay)
         n_other = len(other_decay) + len(other_nodecay)
@@ -323,11 +330,31 @@ class Trainer:
                 loss_dict = self.loss_fn(preds, targets)
 
                 if train and self.update_weights:
-                    self.optimizer.zero_grad()
-                    loss_dict["total"].backward()
-                    nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    if getattr(self, "use_sam", False):
+                        # --- SAM 2-Step Update ---
+                        self.optimizer.zero_grad()
+                        loss_dict["total"].backward()
+                        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        
+                        def closure():
+                            self.optimizer.zero_grad()
+                            # Re-compute loss on the same augmented batch
+                            c_preds = self.model(signal)
+                            c_loss = self.loss_fn(c_preds, targets)["total"]
+                            c_loss.backward()
+                            nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                            return c_loss
+                            
+                        self.optimizer.step(closure)
+                    else:
+                        # --- Standard Update ---
+                        self.optimizer.zero_grad()
+                        loss_dict["total"].backward()
+                        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.optimizer.step()
 
                     # Accumulate gradient norms for monitoring task balance
+                    # (Taken from the parameters after the final backward pass)
                     if hasattr(self, '_grad_norms_mi'):
                         mi_gn = sum(
                             p.grad.norm().item() ** 2
@@ -341,8 +368,6 @@ class Trainer:
                         ) ** 0.5
                         self._grad_norms_mi.append(mi_gn)
                         self._grad_norms_other.append(other_gn)
-
-                    self.optimizer.step()
                     # OneCycleLR requires step() every batch (not every epoch)
                     if self.scheduler is not None and getattr(self, "_step_scheduler_per_batch", False):
                         self.scheduler.step()

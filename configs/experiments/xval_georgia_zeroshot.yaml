@@ -1,0 +1,68 @@
+# configs/experiments/xval_georgia_zeroshot.yaml
+# Inherits from STAGE6-FINAL (Baseline Arch + Focal + GradIso)
+
+experiment_name: "xval_georgia_zeroshot"
+
+# DATASET PATHS
+paths:
+  raw_data: "data/raw/Georgia"
+  processed: "data/processed_georgia"
+  splits: "data/splits_georgia"  # Though we won't train, we might need a dummy split or just evaluate all
+  checkpoints: "checkpoints"
+
+dataset:
+  sampling_rate: 500
+  signal_length: 5000
+  num_leads: 12
+  label_threshold: 50
+  label_threshold_overrides:
+    IMI: 50
+  normal_label: NORM
+  normal_mode: exclusive
+  split_method: random_grouped
+  split_group_key: ecg_id
+  split_seed: 42
+  split_train_ratio: 0.0
+  split_val_ratio: 0.0
+  split_test_ratio: 1.0 # 100% test for zero-shot
+
+# ARCHITECTURE (STAGE6-FINAL: Hybrid-TF)
+model:
+  type: hybrid-tf
+  cnn_backbone: "resnet18"
+  cnn_pretrained: false
+  cnn_frozen: false
+  cnn_features: 256
+  transformer_layers: 4
+  transformer_heads: 8
+  transformer_dim: 256
+  transformer_dropout: 0.1
+  lead_group_encoder: true
+
+# TRAINING (DUMMY)
+training:
+  batch_size: 64
+  learning_rate: 0.001
+  weight_decay: 0.01
+  epochs: 1
+  early_stopping_patience: 10
+  optimizer: adamw
+  scheduler: cosine_warmup
+  warmup_epochs: 2
+  min_lr: 1e-6
+  mixed_precision: true
+
+loss:
+  type: cb_focal
+  focal_gamma: 2.0
+  cb_beta: 0.9999
+  mi_weight_scale: 0.3 # GradIso
+  apply_class_weights: true
+
+augmentation:
+  enabled: false
+
+evaluation:
+  metrics: ["auroc", "auprc", "f1", "precision", "recall"]
+  thresholds:
+    default: 0.5

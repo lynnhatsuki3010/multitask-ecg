@@ -732,3 +732,12 @@ Mọi kết quả đã được đóng băng. Codebase hiện tại là cực k�
   - `Best Epoch (No SWA)`: IMI AUPRC **0.5876** — Arrhy F1 **0.7966**
   - `SWA Model`: IMI AUPRC 0.5830 — Arrhy F1 0.7704
 - **Đánh giá**: SWA **thất bại** và làm giảm mạnh hiệu suất (đặc biệt là Arrhythmia giảm từ ~0.80 xuống 0.77). Lý do rất rõ ràng: Chúng ta đang dùng lịch trình giảm Learning Rate cực nhanh (`Cosine Annealing` về 0 tại epoch 15). Tại epoch 15, mô hình đã chìm vào một điểm cực tiểu vô cùng sắc nét và tối ưu. Việc lấy trung bình nó với các epochs 10-14 (lúc LR vẫn còn cao và mô hình còn đang dao động) đã vô tình "kéo ngược" mô hình ra khỏi vùng cực tiểu này, làm mờ đi các ranh giới phân loại chính xác. SWA không phải là một giải pháp "ăn sẵn" nếu ta đang dùng Fast Annealing.
+
+### Stage 7.2: Test-Time Augmentation (TTA)
+**Baseline (AUG-E03)**: Kế thừa model tốt nhất, test 1 pass.
+**New (INF-E02)**: TTA (Test 3 passes: Gốc, Dịch trái 50ms, Dịch phải 50ms)
+- **Cơ chế**: Khi infer 1 mẫu, ta cắt ra 3 phiên bản tín hiệu dịch chuyển nhẹ trên trục thời gian, sau đó lấy trung bình cộng xác suất đầu ra (Logits averaging). Giúp khử sai số ngẫu nhiên do vị trí bắt đầu cắt đoạn 10 giây.
+- **Kết quả trên tập Test**:
+  - `Baseline (No TTA)`: IMI AUPRC 0.516 — IMI F1 0.527 — Arrhy F1 **0.825**
+  - `TTA Model`: IMI AUPRC **0.524** — IMI F1 0.517 — Arrhy F1 0.823
+- **Đánh giá**: TTA đã **tăng sức mạnh nội tại (AUPRC) của nhóm bệnh hiếm IMI** lên mức cao nhất từ trước tới nay (0.524 so với 0.516). Sự trượt nhẹ của tín hiệu điện tim (dịch pha) thực sự có ảnh hưởng, và TTA đã triệt tiêu được sai số này. Tuy nhiên, việc trung bình hóa xác suất cũng làm các dự đoán mượt (smooth) hơn, dẫn đến F1-score (vốn phụ thuộc vào ngưỡng threshold cứng) bị giảm nhẹ ở cả IMI và Arrhythmia. TTA là một kỹ thuật đáng giá nếu mục tiêu là độ tin cậy tuyệt đối (Robustness), nhưng cái giá phải trả là thời gian Inference tăng gấp 3 lần.

@@ -542,7 +542,13 @@ class Trainer:
             print("\n=== SWA Optimization ===")
             print("Updating BatchNorm statistics for SWA model...")
             from torch.optim.swa_utils import update_bn
-            update_bn(self.train_loader, self.swa_model, device=self.device)
+            
+            # update_bn expects a loader that yields tuples/tensors, not dicts
+            def _loader_wrapper():
+                for batch in self.train_loader:
+                    yield (batch["signal"].float(),)
+                    
+            update_bn(_loader_wrapper(), self.swa_model, device=self.device)
             
             print("Evaluating SWA model on validation set...")
             original_model = self.model

@@ -234,10 +234,4 @@ python scripts/02_train.py --config configs/experiments/norm_e03_minmax.yaml
 2. **NORM-E02 (robust) destroyed Arrhythmia performance**. While it maintained IMI F1 (0.511), the Arrhythmia macro F1 plummeted from 0.830 to 0.740. ECG diagnosis heavily relies on exact amplitude ratios between leads; `robust` scaling uses IQR, which can non-linearly compress peaks, destroying morphological clues.
 3. **NORM-E03 (minmax) performed worst overall**. Restricting the signal tightly to `[0, 1]` flattens crucial variations, causing performance drops across both tasks.
 
-→ **NORM-E01 config carries forward** to Stage 3.
-
----
-
-## Stage 3–6: (To be added after Stage 2 winner is determined)
-
 

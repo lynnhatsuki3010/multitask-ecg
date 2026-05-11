@@ -356,15 +356,11 @@ python scripts/02_train.py --config configs/experiments/aug_e04_lead_dropout.yam
 **Stage 4 winner**: **AUG-E03** (`Noise + Warp`)
 
 **Analysis:**
-1. **AUG-E03 (Noise + Warp) is the clear winner**: Cả IMI F1 (0.527) và AUPRC (0.516) đều tăng vọt so với baseline, trong khi Arrhythmia F1 vẫn giữ vững ở mức 0.825. Việc thêm nhiễu rung đường cơ sở (Baseline Wander) và co giãn thời gian nhẹ (Time Warp) mô phỏng chính xác các nhiễu sinh lý học (nhịp thở, nhịp tim không đều), giúp mô hình tổng quát hóa tuyệt vời.
-2. **AUG-E02 (Random Crop) là một thảm họa**: Arrhythmia F1 sụp đổ xuống **0.626**. Tín hiệu điện tim phụ thuộc rất chặt chẽ vào khoảng cách thời gian giữa các sóng (P-QRS-T). Việc crop 80% rồi resize lại đồng nghĩa với việc "kéo giãn" tín hiệu một cách cực đoan, phá hủy hoàn toàn ý nghĩa sinh lý của nhịp tim.
-3. **AUG-E01 (MixUp) và AUG-E04 (Lead Dropout) không hiệu quả rõ rệt**: MixUp làm mờ ranh giới đặc trưng không gian tinh tế của IMI. Lead Dropout tăng nhẹ IMI AUROC nhưng lại làm giảm Arrhythmia F1 do làm mất đi các lead "bắt nhịp" quan trọng.
-4. **Phase 2 SOTA — 1D CutMix (AUG-E05)**: Mặc dù loss giảm mượt hơn trên tập train (ít overfit hơn), nhưng test metrics lại kém (AUPRC 0.475). Trong ảnh (2D), CutMix giữ được texture cục bộ. Nhưng trong tín hiệu điện tim (1D), việc "cắt dán" phá vỡ hoàn toàn tính liên tục của nhịp tim (Rhythm) và khoảng cách R-R, làm giảm mạnh khả năng nhận diện Arrhythmia (0.816). Hơn nữa, nó tạo ra các bước nhảy biên độ đột ngột (discontinuities) tại điểm cắt, đánh lừa các filter của CNN.
+1. **AUG-E03 (Noise + Warp) is the clear winner**: Both IMI F1 (0.527) and AUPRC (0.516) surged above baseline while Arrhythmia F1 held steady at 0.825. Injecting low-frequency sinusoidal baseline wander and gentle time-axis stretching accurately simulates physiological noise (respiration, irregular heart rate), giving the model excellent generalization.
+2. **AUG-E02 (Random Crop) is catastrophic**: Arrhythmia F1 collapsed to **0.626**. ECG signals are tightly coupled to the precise inter-wave timing (P-QRS-T intervals). Cropping 80% and resizing back is equivalent to extreme time-axis stretching that completely destroys the physiological meaning of cardiac rhythm.
+3. **AUG-E01 (MixUp) and AUG-E04 (Lead Dropout) showed no clear benefit**: MixUp blurs the subtle spatial features that distinguish IMI. Lead Dropout slightly improved IMI AUROC but hurt Arrhythmia F1 by removing leads that are critical for rhythm detection.
+4. **Phase 2 SOTA — 1D CutMix (AUG-E05)**: Although training loss decreased more smoothly (less overfitting), test metrics were worse (AUPRC 0.475). In 2D images, CutMix preserves local texture. In 1D ECG signals, however, pasting cut segments completely breaks cardiac rhythm continuity and R-R interval regularity, significantly hurting Arrhythmia detection (F1 0.816). It also introduces sharp amplitude discontinuities at cut boundaries that mislead CNN filters.
 
-→ **AUG-E03 config carries forward** to Stage 5.
 
----
-
-## Stage 5–6: (To be added after Stage 4 winner is determined)
 
 

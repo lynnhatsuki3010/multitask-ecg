@@ -549,9 +549,9 @@ python scripts/02_train.py --config configs/experiments/aug_e04_lead_dropout.yam
 **Stage 4 winner**: **AUG-E03** (`Noise + Warp`)
 
 **Analysis:**
-1. **AUG-E03 (Noise + Warp) is the clear winner**: Cả IMI F1 (0.527) và AUPRC (0.516) đều tăng vọt so với baseline, trong khi Arrhythmia F1 vẫn giữ vững ở mức 0.825. Việc thêm nhiễu rung đường cơ sở (Baseline Wander) và co giãn thời gian nhẹ (Time Warp) mô phỏng chính xác các nhiễu sinh lý học (nhịp thở, nhịp tim không đều), giúp mô hình tổng quát hóa tuyệt vời.
-2. **AUG-E02 (Random Crop) là một thảm họa**: Arrhythmia F1 sụp đổ xuống **0.626**. Tín hiệu điện tim phụ thuộc rất chặt chẽ vào khoảng cách thời gian giữa các sóng (P-QRS-T). Việc crop 80% rồi resize lại đồng nghĩa với việc "kéo giãn" tín hiệu một cách cực đoan, phá hủy hoàn toàn ý nghĩa sinh lý của nhịp tim.
-3. **AUG-E01 (MixUp) và AUG-E04 (Lead Dropout) không hiệu quả rõ rệt**: MixUp làm mờ ranh giới đặc trưng không gian tinh tế của IMI. Lead Dropout tăng nhẹ IMI AUROC nhưng lại làm giảm Arrhythmia F1 do làm mất đi các lead "bắt nhịp" quan trọng.
+1. **AUG-E03 (Noise + Warp) is the clear winner**: Both IMI F1 (0.527) and AUPRC (0.516) surged above baseline while Arrhythmia F1 held steady at 0.825. Injecting low-frequency sinusoidal baseline wander and gentle time-axis stretching accurately simulates physiological noise (respiration, irregular heart rate), giving the model excellent generalization.
+2. **AUG-E02 (Random Crop) is catastrophic**: Arrhythmia F1 collapsed to **0.626**. ECG signals are tightly coupled to precise inter-wave timing (P-QRS-T intervals). Cropping 80% and resizing back is equivalent to extreme time-axis stretching that completely destroys the physiological meaning of cardiac rhythm.
+3. **AUG-E01 (MixUp) and AUG-E04 (Lead Dropout) showed no clear benefit**: MixUp blurs the subtle spatial features that distinguish IMI. Lead Dropout slightly improved IMI AUROC but hurt Arrhythmia F1 by removing leads critical for rhythm detection.
 
 → **AUG-E03 config carries forward** to Stage 5.
 
@@ -593,21 +593,21 @@ python scripts/02_train.py --config configs/experiments/samp_e02_weighted.yaml
 
 **Stage 5 winner**: **SAMP-E01** (`Uniform Sampling`)
 
-**Analysis — Vì sao Weighted Sampler thất bại?**
+**Analysis — Why did Weighted Sampler fail?**
 
-1. **Weighted Sampler + Focal Loss = Double-correction**: Chúng ta đã có Focal Loss để bù đắp mất cân bằng dữ liệu rồi. Khi thêm Weighted Sampler lên trên, ta vô tình **bù đắp 2 lần** — mỗi batch đã nặng về IMI hơn (do sampler), rồi gradient của IMI còn được khuếch đại thêm lần nữa (do focal). Điều này khiến mô hình quá tập trung vào IMI đến mức quên mất Arrhythmia (F1 rớt 0.807).
-2. **Weighted Sampler làm giảm sự đa dạng trong batch**: Khi bốc quá nhiều ca IMI vào mỗi batch, tỉ lệ NORM và AFIB giảm đi. Mô hình mất đi "ngữ cảnh âm tính" phong phú cần thiết để học được đường ranh giới quyết định (decision boundary) sắc nét.
-3. **Kết luận thực tiễn**: Với multi-task models mà loss đã được điều chỉnh (Focal Loss + GradIso), Uniform Sampling luôn là lựa chọn an toàn. Weighted Sampler chỉ phát huy tác dụng khi dùng cùng BCE thuần túy không có bất kỳ cơ chế rebalancing nào khác.
+1. **Weighted Sampler + Focal Loss = Double-correction**: Focal Loss was already compensating for class imbalance. Adding Weighted Sampler on top inadvertently **corrects twice** — each batch is already IMI-heavy (from the sampler), then IMI gradients get amplified once more (from focal weighting). This causes the model to over-focus on IMI to the point of forgetting Arrhythmia (F1 dropped to 0.807).
+2. **Weighted Sampler reduces batch diversity**: Oversampling IMI cases means NORM and AFIB appear less frequently per batch. The model loses the rich "negative context" it needs to learn sharp decision boundaries.
+3. **Practical conclusion**: For multi-task models with an already-adjusted loss (Focal Loss + GradIso), Uniform Sampling is always the safe choice. Weighted Sampler only helps when paired with plain BCE that has no other rebalancing mechanism.
 
-→ **SAMP-E01 (Uniform) config carries forward** to Stage 6. Stack hiện tại đã ổn định.
+→ **SAMP-E01 (Uniform) config carries forward** to Stage 6. The current stack is stable.
 
 ---
 
 ## Stage 6: Final Full-Length Validation (50 Epochs, Multi-Seed)
 
-**Goal**: Chứng minh rằng tổ hợp kỹ thuật từ các Stage trước thật sự mạnh hơn baseline khi được cho đủ thời gian hội tụ. Đây là lần chạy **dài hạn và dứt khoát** để báo cáo kết quả cuối cùng.
+**Goal**: Prove that the combination of techniques from previous Stages is truly stronger than the baseline when given enough time to converge. This is the **definitive, long-term** run to report final results.
 
-**Final winning stack (từ chuỗi ablation S1→S5):**
+**Final winning stack (from ablation chain S1→S5):**
 | Component | Choice | Stage |
 |-----------|--------|-------|
 | Split | `random_grouped` | S1 |
@@ -821,7 +821,7 @@ Checkpoint saved at: `checkpoints/finetune_ptb/`
 
 ---
 
-## Bảng Chỉ Số Lâm Sàng Đầy Đủ (Full Clinical Metrics)
+## Full Clinical Metrics
 
 *Script đánh giá: `scratch/eval_full_metrics.py` | Threshold = 0.5 (clinical default)*
 

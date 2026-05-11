@@ -1,0 +1,143 @@
+# xval_ptb_finetune.yaml
+# ─────────────────────────────────────────────────────────────────
+# Config for Phase 2 Fine-Tuning on the PTB Diagnostic ECG Database.
+#
+# Strategy:
+#   - Freeze CNN Backbone + Transformer + Arrhythmia Head immediately.
+#   - Only the MI Head (IMI + ASMI MLPs) is updated.
+#   - 15 epochs with cosine LR decay (same Fast Annealing strategy that
+#     worked best during Stage 4 ablation on PTB-XL).
+#
+# NOTE: PTB has DIRECT label match for IMI and ASMI — no proxy needed!
+# ─────────────────────────────────────────────────────────────────
+
+augmentation:
+  aug_baseline_wander: true
+  aug_lead_dropout: false
+  aug_mixup: false
+  aug_random_crop: false
+  aug_time_warp: true
+  mixup_alpha: 0.2
+
+dataset:
+  label_threshold: 50
+  label_threshold_overrides:
+    IMI: 80
+  normal_label: NORM
+  normal_mode: exclusive
+  num_leads: 12
+  sampling_rate: 500
+  signal_length: 5000
+  split_method: random_grouped
+  split_num_folds: 10
+  split_seed: 42
+  split_test_fold_index: 0
+  test_fold: 0
+  val_fold: 0
+
+eval:
+  metrics:
+    - auroc
+    - auprc
+    - f1
+    - accuracy
+  threshold: 0.5
+  threshold_search:
+    class_beta:
+      AFLT: 2.0
+      ASMI: 1.2
+      IMI: 1.5
+      PVC: 1.0
+    max_rare_threshold: 0.4
+    min_pos_count: 5        # lowered for small PTB dataset
+    min_threshold: 0.15
+  val_tune_thresholds_every: 1
+
+hrv:
+  enabled: false
+
+label_groups:
+  arrhythmia: [0, 1, 2, 3, 4]
+  mi: [5, 6]
+
+labels:
+  - index: 0
+    name: NORM
+    task: normal
+  - index: 1
+    name: AFIB
+    task: arrhythmia
+  - index: 2
+    name: STACH
+    task: arrhythmia
+  - index: 3
+    name: PVC
+    task: arrhythmia
+  - index: 4
+    name: AFLT
+    task: arrhythmia
+  - index: 5
+    name: IMI
+    task: mi
+  - index: 6
+    name: ASMI
+    task: mi
+
+model:
+  architecture: hybrid_transformer
+  cnn_stage_dims: [128, 192, 256]
+  d_model: 256
+  dim_feedforward: 512
+  downsample_factor: 20
+  dropout: 0.15
+  head_hidden_dim: 128
+  hrv_detach: false
+  mi_branch_dim: 128
+  mi_gradient_scale: 0.3
+  nhead: 8
+  num_encoder_layers: 4
+  stem_dim: 96
+  use_se: false
+
+paths:
+  checkpoints: checkpoints/finetune_ptb
+  processed: data/processed_ptb
+  raw_data: data/raw/PTB
+  splits: data/splits_ptb
+
+preprocessing:
+  bandpass_high: 40.0
+  bandpass_low: 0.5
+  normalize: zscore
+  notch_freq: 50.0
+
+training:
+  batch_size: 32              # smaller than Georgia (PTB is much smaller dataset)
+  early_stopping_patience: 10
+  epochs: 15
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  freeze_backbone_at_epoch: 1  # FREEZE backbone + arrhythmia head immediately!
+  hrv_loss: smooth_l1
+  label_smoothing: 0.0
+  loss_weights:
+    arrhythmia: 1.0
+    asmi: 1.0
+    hrv: 0.0
+    imi: 1.0
+    mi: 1.0
+  lr: 0.0001
+  max_pos_weight: 30.0
+  mi_lr_multiplier: 1.0
+  monitor_metric: imi_auprc
+  num_workers: 0
+  pin_memory: true
+  pos_weight_power: 0.75
+  save_every: 5
+  scheduler: cosine
+  seed: 42
+  use_focal: true
+  use_pos_weight: false
+  warmup_epochs: 0
+  weight_decay: 0.001
+  weighted_sampler: false

@@ -820,3 +820,54 @@ Checkpoint lưu tại: `checkpoints/finetune_ptb/`
 3. **PTB tốt hơn Georgia vì Direct Label**: IMI AUPRC của PTB (0.865) vượt xa Georgia (0.650) vì PTB có nhãn thực (Inferior MI) thay vì nhãn đại diện (Inferior Ischaemia). Đây là bằng chứng cho thấy AUPRC thấp trên Georgia không phải do mô hình yếu, mà do **khó khăn vốn có của việc ánh xạ cross-task** (Infarction ≠ Ischaemia về mặt sinh lý).
 
 4. **Kết luận cuối cùng cho Luận văn**: Mô hình Hybrid-Transformer đã được kiểm chứng trên **3 tập dữ liệu độc lập** từ 3 nguồn khác nhau (Đức 2000s, Mỹ 2020, Đức 1990s), đạt AUROC > 0.84 cho MI detection sau Head fine-tuning. Đây là minh chứng vững chắc cho tính **Universal ECG Feature Extractor** của kiến trúc được đề xuất.
+
+---
+
+## Bảng Chỉ Số Lâm Sàng Đầy Đủ (Full Clinical Metrics)
+
+*Script đánh giá: `scratch/eval_full_metrics.py` | Threshold = 0.5 (clinical default)*
+
+### Georgia Fine-Tune — Arrhythmia Head (Test: 692 records)
+
+| Label | Support | AUROC | AUPRC | Sensitivity | Specificity | Precision | F1 |
+|-------|---------|-------|-------|-------------|-------------|-----------|-----|
+| NORM | 263 | 0.959 | 0.946 | 0.730 | 0.977 | 0.950 | 0.826 |
+| AFIB | 86 | 0.881 | 0.694 | 0.593 | 0.969 | 0.729 | 0.654 |
+| STACH | 189 | 0.954 | 0.930 | 0.566 | 0.996 | 0.982 | 0.718 |
+| PVC | 59 | 0.639 | 0.462 | 0.305 | 0.992 | 0.783 | 0.439 |
+| AFLT | 28 | 0.663 | 0.279 | 0.000 | 1.000 | 0.000 | 0.000 |
+| **MACRO** | **625** | **0.819** | **0.662** | **0.439** | **0.987** | **0.689** | **0.527** |
+
+### Georgia Fine-Tune — MI Head (Test: 692 records)
+
+| Label | Support | AUROC | AUPRC | Sensitivity | Specificity | Precision | F1 |
+|-------|---------|-------|-------|-------------|-------------|-----------|-----|
+| IMI | 68 | 0.900 | 0.657 | 0.412 | 0.987 | 0.778 | 0.538 |
+| ASMI | 42 | 0.951 | 0.689 | 0.429 | 0.995 | 0.857 | 0.571 |
+| **MACRO** | **110** | **0.926** | **0.673** | **0.420** | **0.991** | **0.817** | **0.555** |
+
+### PTB Fine-Tune — MI Head (Test: 63 records)
+
+*(Arrhythmia Head bị loại do PTB không có nhãn AFIB/STACH/PVC/AFLT)*
+
+| Label | Support | AUROC | AUPRC | Sensitivity | Specificity | Precision | F1 |
+|-------|---------|-------|-------|-------------|-------------|-----------|-----|
+| IMI | 27 | 0.857 | 0.815 | 0.778 | 0.778 | 0.724 | 0.750 |
+| ASMI | 28 | 0.867 | 0.888 | 0.750 | 0.886 | 0.840 | 0.792 |
+| **MACRO** | **55** | **0.862** | **0.851** | **0.764** | **0.832** | **0.782** | **0.771** |
+
+### So Sánh Trực Tiếp MI Head: Georgia vs PTB
+
+| Metric | IMI (Georgia) | IMI (PTB) | ASMI (Georgia) | ASMI (PTB) |
+|--------|--------------|-----------|----------------|------------|
+| AUROC | **0.900** | 0.857 | **0.951** | 0.867 |
+| AUPRC | 0.657 | **0.815** | 0.689 | **0.888** |
+| Sensitivity | 0.412 | **0.778** | 0.429 | **0.750** |
+| Specificity | **0.987** | 0.778 | **0.995** | 0.886 |
+| Precision | **0.778** | 0.724 | **0.857** | 0.840 |
+| F1 | 0.538 | **0.750** | 0.571 | **0.792** |
+
+**Phân tích Trade-off Sensitivity vs Specificity:**
+- **Georgia**: Specificity cực cao (0.987–0.995) nhưng Sensitivity thấp (0.41–0.43). Mô hình rất thận trọng — chỉ báo dương tính khi cực kỳ chắc chắn, nên ít báo nhầm nhưng bỏ sót nhiều ca thực sự.
+- **PTB**: Sensitivity cao hơn nhiều (0.75–0.78) và Specificity ở mức cân bằng (0.78–0.89). Đây là profile **phù hợp hơn cho screening** — phát hiện được đa số ca bệnh thực sự.
+- **Nguyên nhân**: Georgia dùng **Proxy label** (Ischaemia ≠ Infarction) — mô hình không tự tin khi đặc trưng ST khác với Q-wave. PTB dùng **Direct label** nên mô hình học được ánh xạ chính xác hơn, cho phép threshold linh hoạt hơn.

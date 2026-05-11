@@ -595,8 +595,6 @@ python scripts/02_train.py --config configs/experiments/samp_e02_weighted.yaml
 
 **Analysis — Vì sao Weighted Sampler thất bại?**
 
-Đây là một bài học quan trọng. Kết quả này hoàn toàn có lý:
-
 1. **Weighted Sampler + Focal Loss = Double-correction**: Chúng ta đã có Focal Loss để bù đắp mất cân bằng dữ liệu rồi. Khi thêm Weighted Sampler lên trên, ta vô tình **bù đắp 2 lần** — mỗi batch đã nặng về IMI hơn (do sampler), rồi gradient của IMI còn được khuếch đại thêm lần nữa (do focal). Điều này khiến mô hình quá tập trung vào IMI đến mức quên mất Arrhythmia (F1 rớt 0.807).
 2. **Weighted Sampler làm giảm sự đa dạng trong batch**: Khi bốc quá nhiều ca IMI vào mỗi batch, tỉ lệ NORM và AFIB giảm đi. Mô hình mất đi "ngữ cảnh âm tính" phong phú cần thiết để học được đường ranh giới quyết định (decision boundary) sắc nét.
 3. **Kết luận thực tiễn**: Với multi-task models mà loss đã được điều chỉnh (Focal Loss + GradIso), Uniform Sampling luôn là lựa chọn an toàn. Weighted Sampler chỉ phát huy tác dụng khi dùng cùng BCE thuần túy không có bất kỳ cơ chế rebalancing nào khác.
@@ -656,140 +654,140 @@ python scripts/02_train.py --config configs/experiments/final_e03_seed2024.yaml
 
 *(Reference best ablation AUG-E03: IMI AUPRC ~0.516, Arrhy F1 ~0.825 @ 15 epochs)*
 
-**Stage 6 final result**: Tổ hợp ablation duy trì sức mạnh tuyệt vời trên Arrhythmia (0.826 ± 0.008), nhưng IMI lại giảm nhẹ so với vòng 15-epoch.
+**Stage 6 final result**: The ablation stack maintains excellent performance on Arrhythmia (0.826 ± 0.008), but IMI slightly drops compared to the 15-epoch run.
 
 ---
 
-## Tổng Kết & Bài Học Rút Ra (The Grand Conclusion)
+## Overall Summary & Key Takeaways (The Grand Conclusion)
 
-Bạn đã nhận ra một hiện tượng cực kỳ thú vị trong Deep Learning: **"Tại sao train 50 epoch lại kém hơn train 15 epoch?"**
+You've noticed a fascinating phenomenon in Deep Learning: **"Why does training for 50 epochs perform worse than training for 15 epochs?"**
 
-Phân tích log của 3 lần chạy Final, các model đều dừng lại (early stop) ở khoảng epoch 36. Sự sụt giảm của IMI so với vòng Ablation (Stage 4) xuất phát từ 2 nguyên nhân cốt lõi:
+Analyzing the logs of the 3 Final runs, all models stopped (early stop) around epoch 36. The drop in IMI compared to the Ablation round (Stage 4) stems from 2 core reasons:
 
-1. **Hiệu ứng Cosine Annealing (Lịch trình Học rate)**:
-   - Ở vòng Ablation, ta setup `epochs: 15`. Bộ lập lịch (Cosine Scheduler) sẽ ép Learning Rate giảm dốc cực nhanh từ `1e-4` về `0` ngay tại epoch 15. Việc LR giảm mạnh tay ép model phải "đóng băng" (settle) vào một cực tiểu cục bộ rất tốt, đóng vai trò như một cơ chế regularization hoàn hảo.
-   - Ở vòng Final, ta setup `epochs: 50`. Bộ lập lịch kéo giãn đường cong giảm LR ra. Tại epoch 15-20, LR vẫn còn khá lớn. Tốc độ học lớn kết hợp với lượng mẫu bệnh IMI quá ít khiến model bị trượt qua lại (oscillate) quanh điểm cực tiểu tối ưu mà không chốt hạ được.
-2. **Overfitting trên nhóm thiểu số**: Với lượng data IMI quá mỏng, việc cho phép model nhìn đi nhìn lại dữ liệu tới 36 epochs khiến nó bắt đầu học thuộc lòng (memorize) tập train của IMI, dẫn đến AUPRC trên tập validation bị sụt giảm.
+1. **The Cosine Annealing Effect (Learning Rate Schedule)**:
+   - In the Ablation round, we set `epochs: 15`. The scheduler (Cosine Scheduler) forces the Learning Rate to decay steeply from `1e-4` to `0` right at epoch 15. This drastic LR drop forces the model to "freeze" (settle) into a very good local minimum, acting as a perfect regularization mechanism.
+   - In the Final round, we set `epochs: 50`. The scheduler stretches the LR decay curve. At epochs 15-20, the LR is still quite large. The high learning rate combined with the sparse IMI positive samples causes the model to oscillate around the optimal minimum without being able to settle.
+2. **Overfitting on the Minority Class**: With extremely thin IMI data, allowing the model to repeatedly see the data for up to 36 epochs causes it to start memorizing the training set for IMI, leading to a drop in AUPRC on the validation set.
 
-**KẾT LUẬN CUỐI CÙNG CHO BÁO CÁO CỦA BẠN:**
-- Cấu trúc **Hybrid Transformer** kết hợp với **Z-Score Norm**, **Focal Loss**, **Gradient Isolation**, và **Noise+Warp Augmentation** là tổ hợp State-of-the-Art cho bài toán này. Điểm Arrhythmia F1 đạt trung bình **0.826** là một con số rất ấn tượng và cực kỳ ổn định (chỉ lệch ±0.0079 qua 3 seeds).
-- Đối với các lớp bệnh hiếm như IMI, mô hình đã đạt đến **giới hạn của dữ liệu (Data Ceiling)**. Thay vì cố gắng train lâu hơn (50 epochs), chiến lược tối ưu nhất (nghịch lý thay) chính là **Train ngắn hạn với tốc độ giảm LR cực nhanh (Fast Annealing)** (giống hệt cấu hình 15-epoch của Stage 4).
+**FINAL CONCLUSION:**
+- The **Hybrid Transformer** architecture combined with **Z-Score Norm**, **Focal Loss**, **Gradient Isolation**, and **Noise+Warp Augmentation** is the State-of-the-Art stack for this problem. The Arrhythmia F1 score averages **0.826**, an impressive and highly stable figure (only ±0.0079 variance across 3 seeds).
+- For rare classes like IMI, the model has reached the **Data Ceiling**. Instead of trying to train longer (50 epochs), the most optimal strategy (paradoxically) is **Short-term training with extremely fast LR decay (Fast Annealing)** (exactly like the 15-epoch config of Stage 4).
 
-Dự án tối ưu hóa Systematic Ablation của chúng ta đã hoàn thành xuất sắc mục tiêu: Cô lập, đánh giá, và tìm ra được giới hạn thực sự của cả mô hình lẫn dữ liệu!
+Our Systematic Ablation optimization project has successfully achieved its goal: Isolating, evaluating, and finding the true limits of both the model and the data!
 
 ---
 
 ## Phase 2: SOTA Techniques Ablation
 
-Sau khi đã chốt hạ tổ hợp kỹ thuật xuất sắc nhất từ Stage 1 → 5, chúng ta tiếp tục thực hiện thử nghiệm bổ sung (Additive Ablation) với 3 kỹ thuật tiên tiến (SOTA) từ các nghiên cứu gần đây (2021-2025). Mỗi kỹ thuật được chạy đúng 15 epochs và so sánh trực tiếp với Baseline chiến thắng của từng Stage.
+After finalizing the best technical stack from Stage 1 → 5, we conduct additional experiments (Additive Ablation) with 3 advanced SOTA techniques from recent research (2021-2025). Each technique is trained for exactly 15 epochs and compared directly with the winning Baseline of its respective Stage.
 
 ### 1. Asymmetric Loss (ASL) — Revisit Stage 3
 **Baseline (LOSS-E03)**: Focal Loss + GradIso
 **New (LOSS-E04)**: Asymmetric Loss (ICCV 2021)
-- **Cơ chế**: ASL phạt nặng False Negative nhưng nhẹ tay với False Positive, và cắt bỏ hoàn toàn gradient của những mẫu âm tính dễ (easy negatives) để đối phó với hiện tượng mất cân bằng siêu nghiêm trọng (long-tail).
-- **Kết quả**:
+- **Mechanism**: ASL heavily penalizes False Negatives but is lenient on False Positives, and completely zeros out the gradient of easy negative samples to handle extreme long-tail imbalance.
+- **Results**:
   - `LOSS-E03`: IMI AUPRC 0.493 — Arrhy F1 **0.822**
   - `LOSS-E04 (ASL)`: IMI AUPRC **0.496** — Arrhy F1 **0.785**
-- **Đánh giá**: Mặc dù IMI AUPRC nhích lên, nhưng ASL tàn phá hoàn toàn task Arrhythmia. Lớp `NORM` (chiếm đa số) cần các mẫu âm tính để duy trì ranh giới quyết định. Việc ASL cắt bỏ gradient của easy negatives khiến khả năng phân loại Arrhythmia sụp đổ. **Focal + GradIso vẫn là chân ái.**
+- **Evaluation**: Although IMI AUPRC slightly improves, ASL completely devastates the Arrhythmia task. The `NORM` class (which is the majority) needs negative samples to maintain its decision boundary. ASL cutting off gradients for easy negatives causes Arrhythmia classification to collapse. **Focal + GradIso remains the best choice.**
 
 ### 2. 1D CutMix — Revisit Stage 4
 **Baseline (AUG-E03)**: Noise + Warp
 **New (AUG-E05)**: 1D CutMix
-- **Cơ chế**: Thay vì làm nhòe toàn bộ tín hiệu như MixUp, CutMix hoán đổi một khung thời gian ngẫu nhiên giữa 2 bệnh nhân, giúp giữ nguyên vẹn 100% hình thái của từng nhịp tim bên trong khung cắt.
-- **Kết quả**:
+- **Mechanism**: Instead of blending entire signals like MixUp, CutMix swaps a random time window between two patients, perfectly preserving 100% of the morphology of each heartbeat within the cut window.
+- **Results**:
   - `AUG-E03`: IMI AUPRC **0.516** — IMI F1 **0.527** — Arrhy F1 **0.825**
   - `AUG-E05 (CutMix)`: IMI AUPRC 0.475 — IMI F1 0.473 — Arrhy F1 0.816
-- **Đánh giá**: CutMix thất bại thảm hại. Trong ảnh 2D, CutMix giữ được texture cục bộ. Nhưng trong tín hiệu điện tim 1D, việc "cắt dán" đứt đoạn đã phá vỡ hoàn toàn **Nhịp tim (Rhythm)** và **khoảng cách R-R**. Nó cũng tạo ra các bước nhảy biên độ đột ngột (discontinuities) tại điểm cắt, đánh lừa các filter của CNN. Kỹ thuật `Noise + Warp` (thêm nhiễu và co giãn mượt mà) vẫn là phương pháp tăng cường dữ liệu sinh lý học tốt nhất.
+- **Evaluation**: CutMix failed miserably. In 2D images, CutMix preserves local texture. But in 1D ECG signals, disjointed "cut-and-paste" completely breaks the **Rhythm** and **R-R intervals**. It also creates sudden amplitude jumps (discontinuities) at the cut points, misleading the CNN filters. `Noise + Warp` (adding noise and smooth stretching) remains the best physiological data augmentation method.
 
 ### 3. Squeeze-and-Excitation (SE) Block — Revisit Stage 6
 **Baseline (AUG-E03)**: HybridTransformer (No SE-Block)
-**New (ARCH-E01)**: HybridTransformer + SEBlock1D trong CNN backbone
-- **Cơ chế**: Gắn module Attention channel-wise (SE-Block) sau mỗi lớp CNN để mô hình tự động "tắt/mở" các đạo trình (leads) dựa trên độ quan trọng của chúng.
-- **Kết quả**:
+**New (ARCH-E01)**: HybridTransformer + SEBlock1D in CNN backbone
+- **Mechanism**: Attaches a channel-wise Attention module (SE-Block) after each CNN layer so the model can automatically "turn on/off" leads based on their importance.
+- **Results**:
   - `Baseline`: IMI AUPRC **0.516** — IMI F1 0.527 — Arrhy F1 **0.825**
   - `ARCH-E01 (SE-Block)`: IMI AUPRC 0.511 — IMI F1 **0.530** — Arrhy F1 0.793
-- **Đánh giá**: SE-Block kéo tụt Arrhythmia F1 xuống rất thấp (0.793). Lý do là SE-Block bóp nghẹt các leads mà nó cho là không quan trọng tại các block đầu. Tuy nhiên, việc nhận dạng nhịp tim (Arrhythmia) đòi hỏi một góc nhìn toàn cảnh trên tất cả các đạo trình. Hơn nữa, việc thêm SE-Block vào backbone chung là trùng lặp chức năng (redundancy), vì chúng ta đã thiết kế sẵn `LeadGroupEncoder` nằm ngay phía trước MI Head để đặc trị việc nhóm các đạo trình (Inferior, Reciprocal, Anterior).
+- **Evaluation**: SE-Block drags Arrhythmia F1 down significantly (0.793). The reason is that SE-Block chokes off leads it deems unimportant in the early blocks. However, recognizing heart rhythms (Arrhythmia) requires a holistic view across all leads. Furthermore, adding SE-Block to the shared backbone is redundant, since we already designed a `LeadGroupEncoder` right before the MI Head specifically to group leads (Inferior, Reciprocal, Anterior).
 
 ---
 
-## TỔNG KẾT PHASE 2 (FINAL VERDICT)
+## OVERALL SUMMARY OF PHASE 2 (FINAL VERDICT)
 
-Dự án Systematic Ablation cực kỳ thành công. Chúng ta đã chứng minh được:
-1. **Các phương pháp SOTA không phải là "viên đạn bạc"**: ASL, CutMix, SE-Block rất nổi tiếng trong Computer Vision, nhưng khi áp dụng một cách mù quáng vào chuỗi thời gian sinh lý học (ECG Multi-task), chúng sẽ phá vỡ cấu trúc không gian (leads) và thời gian (rhythm) tự nhiên của nhịp tim.
-2. **Kiến trúc tốt nhất đã được chốt hạ**: Sự kết hợp giữa **Focal Loss + GradIso** (để giữ thăng bằng task), và **Noise+Warp Augmentation** (để mô phỏng nhiễu sinh lý) là tổ hợp vững chắc nhất, đạt ngưỡng giới hạn của dữ liệu (Data Ceiling).
+The Systematic Ablation project was extremely successful. We proved that:
+1. **SOTA methods are not "silver bullets"**: ASL, CutMix, and SE-Block are highly renowned in Computer Vision, but when blindly applied to physiological time series (ECG Multi-task), they destroy the natural spatial (leads) and temporal (rhythm) structure of the heartbeat.
+2. **The best architecture is finalized**: The combination of **Focal Loss + GradIso** (to balance tasks) and **Noise+Warp Augmentation** (to simulate physiological noise) is the most robust stack, hitting the limits of the data (Data Ceiling).
 
-Mọi kết quả đã được đóng băng. Codebase hiện tại là cực kỳ sạch sẽ, module hóa và sẵn sàng cho việc đưa vào viết báo cáo khoa học (hoặc Khóa luận)!
+All results are frozen. The current codebase is extremely clean, modular, and ready to be written up into a scientific report (or Thesis)!
 
 ---
 
 ## Phase 4: Cross-Dataset Validation (Georgia Dataset)
 
 **Date**: 2026-05-10
-**Goal**: Kiểm chứng khả năng tổng quát hóa (Generalization) của kiến trúc Hybrid-Transformer tốt nhất (Stage 6 Winner) trên một bộ dữ liệu hoàn toàn độc lập (Georgia 12-Lead ECG Challenge Dataset). Trả lời câu hỏi: Hiệu năng thấp của IMI/ASMI trên PTB-XL là do giới hạn của mô hình (Model Capacity) hay do giới hạn của bộ nhãn (Dataset Label Constraints)?
+**Goal**: Verify the generalization capabilities of the best Hybrid-Transformer architecture (Stage 6 Winner) on a completely independent dataset (Georgia 12-Lead ECG Challenge Dataset). Answer the question: Is the low IMI/ASMI performance on PTB-XL due to model limitations (Model Capacity) or label limitations (Dataset Label Constraints)?
 
-### Phương pháp (Proxy Strategy)
-- Georgia không có nhãn Infarction cụ thể (IMI, ASMI) mà gộp chung thành một nhãn `MI` siêu cấp.
-- Tuy nhiên, Georgia có nhãn Thiếu máu cục bộ (**Ischaemia**).
-- **Chiến lược**: Sử dụng Inferior Ischaemia và Anterior Ischaemia làm "vật thế thân" (Proxy) cho IMI và ASMI. Chúng ta sẽ test xem mô hình được train để tìm vùng hoại tử (Infarction - sóng Q) có bắt được vùng thiếu máu (Ischaemia - đoạn ST chênh) hay không.
+### Methodology (Proxy Strategy)
+- Georgia does not have specific Infarction labels (IMI, ASMI) but groups them into a super-class `MI`.
+- However, Georgia has Ischaemia labels (**Ischaemia**).
+- **Strategy**: Use Inferior Ischaemia and Anterior Ischaemia as "proxies" for IMI and ASMI. We will test whether a model trained to find necrotic tissue (Infarction - Q wave) can detect ischemic tissue (Ischaemia - ST segment deviation).
 
 ### 1. Zero-Shot Inference
-Mô hình `run_20260508_185741` được load nguyên trạng, không train thêm bất kỳ epoch nào, và chạy thẳng trên tập test của Georgia.
+The `run_20260508_185741` model is loaded as-is, without training any further epochs, and run directly on the Georgia test set.
 
-**Kết quả Arrhythmia (Tuyệt vời):**
+**Arrhythmia Results (Excellent):**
 - **NORM:** AUROC 0.942
 - **STACH:** AUROC 0.957
 - **AFIB:** AUROC 0.891
-*Kết luận*: Backbone đã trích xuất được những đặc trưng nền tảng vạn năng của nhịp tim người. Dù chuyển sang domain bệnh viện khác, quốc gia khác, máy đo khác, mô hình vẫn rank (xếp hạng) bệnh nhân Arrhythmia cực kỳ chuẩn xác.
+*Conclusion*: The backbone has extracted universal foundational features of human heart rhythms. Even when switching to a different hospital domain, different country, and different ECG machine, the model still ranks Arrhythmia patients extremely accurately.
 
-**Kết quả MI (Thất bại hoàn toàn trên Proxy):**
-- **IMI (Inferior Ischaemia Proxy):** AUROC 0.509 (Chỉ ngang ngửa đoán bừa)
+**MI Results (Complete failure on Proxy):**
+- **IMI (Inferior Ischaemia Proxy):** AUROC 0.509 (Equivalent to random guessing)
 - **ASMI (Anterior Ischaemia Proxy):** AUROC 0.645
-*Kết luận Lâm sàng*: Mô hình cực kỳ "có kỷ luật". Nó không học "lối tắt" (shortcuts) hay các điểm bất thường chung chung. Nó được train để tìm đặc trưng sóng Q của hoại tử, nên khi đưa cho nó một điện tâm đồ bị thiếu máu (chỉ biến đổi đoạn ST), nó hoàn toàn làm ngơ. Đây là một minh chứng xuất sắc về độ tin cậy lâm sàng (Clinical Reliability).
+*Clinical Conclusion*: The model is highly "disciplined". It doesn't learn shortcuts or generic abnormalities. It was trained to find Q-wave characteristics of necrosis, so when presented with an ischemic ECG (only ST segment changes), it completely ignores it. This is an excellent demonstration of Clinical Reliability.
 
 ### 2. Head Fine-Tuning (15 Epochs)
-Để chứng minh rằng Backbone *thực sự đã trích xuất được* đặc trưng của đoạn ST (nhưng không dùng vì Head chưa được dạy cách dùng), chúng ta **Khóa chặt toàn bộ Backbone (CNN + Transformer)**, và chỉ cho phép 2 cái MLP Heads nhỏ xíu học lại cách ánh xạ đặc trưng trong 15 epochs.
+To prove that the Backbone *actually extracted* ST segment features (but just didn't use them because the Head hadn't been taught how), we **completely freeze the Backbone (CNN + Transformer)**, and only allow the two tiny MLP Heads to relearn how to map features for 15 epochs.
 
-**Kết quả rực rỡ:**
-- **Arrhythmia F1 (Tuned Thresholds):** Tăng từ ~0.50 lên **0.6141**.
-- **MI F1 (Tuned Thresholds):** Tăng từ 0.000 lên **0.5824**.
-- **IMI AUPRC:** Tăng vọt từ 0.09 lên **0.6504**.
-- **IMI AUROC:** Tăng vọt từ 0.509 lên **0.9230**.
-- **ASMI AUROC:** Tăng vọt từ 0.645 lên **0.9239**.
+**Brilliant Results:**
+- **Arrhythmia F1 (Tuned Thresholds):** Increased from ~0.50 to **0.6141**.
+- **MI F1 (Tuned Thresholds):** Increased from 0.000 to **0.5824**.
+- **IMI AUPRC:** Surged from 0.09 to **0.6504**.
+- **IMI AUROC:** Surged from 0.509 to **0.9230**.
+- **ASMI AUROC:** Surged from 0.645 to **0.9239**.
 
-### KẾT LUẬN TỐI HẬU (THE ULTIMATE THESIS CONCLUSION)
-Việc AUROC của Ischaemia tăng vọt lên > 0.92 chỉ sau 15 epochs train Head nhỏ chứng tỏ: **Backbone đã âm thầm học được mọi đặc trưng vi tế nhất của đoạn ST trong quá trình train bằng PTB-XL**. 
-Giới hạn AUPRC 0.51 trên PTB-XL hoàn toàn là do tập dữ liệu có quá ít mẫu bệnh IMI dương tính, chứ KHÔNG PHẢI do kiến trúc Hybrid-Transformer yếu kém. Khi chuyển sang một tập dữ liệu phù hợp, kiến trúc này bùng nổ sức mạnh và trở thành một **Universal ECG Feature Extractor**.
+### THE ULTIMATE THESIS CONCLUSION
+The fact that Ischaemia AUROC surged to > 0.92 after just 15 epochs of training a tiny Head proves: **The Backbone quietly learned all the subtle ST segment features during training on PTB-XL**. 
+The AUPRC ceiling of 0.51 on PTB-XL is entirely because the dataset has too few positive IMI cases, NOT because the Hybrid-Transformer architecture is weak. When transferred to an appropriate dataset, this architecture explodes with power and becomes a **Universal ECG Feature Extractor**.
 
 ---
 
 ## Phase 5: Cross-Dataset Validation (PTB Diagnostic ECG Database)
 
 **Date**: 2026-05-11
-**Goal**: Xác nhận lần 2 khả năng tổng quát hóa (Generalization) của mô hình trên tập PTB — tiền thân của PTB-XL. Đây là thử nghiệm **mạnh nhất** vì PTB có nhãn IMI và ASMI trực tiếp (không cần Proxy như Georgia).
+**Goal**: Perform a second confirmation of the model's generalization capabilities on the PTB dataset — the predecessor to PTB-XL. This is the **strongest** test because PTB has direct IMI and ASMI labels (no proxy needed like Georgia).
 
-**Dataset Statistics (Sau filtering):**
-- Tổng số bản ghi: **436** (từ 290 bệnh nhân, 549 files gốc)
-- Train / Val / Test: **320 / 53 / 63** (patient-grouped, không rò rỉ dữ liệu)
+**Dataset Statistics (After filtering):**
+- Total records: **436** (from 290 patients, out of 549 raw files)
+- Train / Val / Test: **320 / 53 / 63** (patient-grouped, no data leakage)
 - IMI (Test): 27 | ASMI (Test): 28 | NORM (Test): 9
 
-**Đặc điểm kỹ thuật của PTB:**
-- Tần số lấy mẫu gốc: **1000 Hz** → Resampled xuống **500 Hz**
-- Độ dài bản ghi gốc: ~38 giây → Crop lấy **10 giây đầu** (5000 samples)
-- 15 kênh gốc (12 standard + 3 Frank VX/VY/VZ) → Chỉ giữ **12 standard leads**
+**PTB Technical Characteristics:**
+- Original sampling rate: **1000 Hz** → Resampled to **500 Hz**
+- Original record length: ~38 seconds → Cropped to **first 10 seconds** (5000 samples)
+- Original 15 channels (12 standard + 3 Frank VX/VY/VZ) → Kept only **12 standard leads**
 
 ### 1. Zero-Shot Inference
-Checkpoint `run_20260508_185741_hybrid-tf-focal-aug` chạy trực tiếp trên Test set của PTB, không fine-tune.
+Checkpoint `run_20260508_185741_hybrid-tf-focal-aug` run directly on the PTB Test set, no fine-tuning.
 
 | Label | AUROC | AUPRC | F1@0.5 | Support |
 |-------|-------|-------|--------|---------|
 | **IMI** | 0.501 | 0.474 | 0.000 | 27 |
 | **ASMI** | 0.628 | 0.587 | 0.069 | 28 |
 
-*Kết luận*: Kết quả hoàn toàn nhất quán với Georgia Zero-Shot (IMI AUROC ≈ 0.50, ASMI AUROC ≈ 0.65). Mô hình không thể nhận diện MI theo hướng dẫn zero-shot vì Head chưa được "dạy" cách ánh xạ đặc trưng của máy đo PTB (1000 Hz → 500 Hz). Điều này **tiếp tục khẳng định** rằng Backbone đã học được đặc trưng hình thái chứ không học "domain shortcut".
+*Conclusion*: Results are completely consistent with Georgia Zero-Shot (IMI AUROC ≈ 0.50, ASMI AUROC ≈ 0.65). The model cannot recognize MI in a zero-shot manner because the Head hasn't been "taught" how to map the features from the PTB ECG machine (1000 Hz → 500 Hz). This **further confirms** that the Backbone learned morphological features, not "domain shortcuts".
 
 ### 2. Head Fine-Tuning (15 Epochs)
-Freeze hoàn toàn Backbone + Arrhythmia Head. Chỉ train MI Head (IMI + ASMI MLP).
-Checkpoint lưu tại: `checkpoints/finetune_ptb/`
+Completely freeze Backbone + Arrhythmia Head. Only train MI Head (IMI + ASMI MLP).
+Checkpoint saved at: `checkpoints/finetune_ptb/`
 
 | Label | AUROC | AUPRC | F1 (Tuned) | Prec | Recall |
 |-------|-------|-------|-----------|------|--------|
@@ -797,29 +795,29 @@ Checkpoint lưu tại: `checkpoints/finetune_ptb/`
 | **ASMI** | 0.915 | 0.914 | **0.837** | 0.900 | 0.783 |
 | **MI Macro** | 0.881 | 0.890 | **0.806** | 0.783 | 0.853 |
 
-**Kết quả so sánh Zero-Shot vs Fine-Tuned:**
+**Comparison: Zero-Shot vs Fine-Tuned:**
 | Label | AUROC (Zero) | AUROC (Tuned) | Delta | AUPRC (Zero) | AUPRC (Tuned) | Delta |
 |-------|-------------|--------------|-------|-------------|--------------|-------|
 | IMI | 0.501 | **0.848** | **+0.347** | 0.474 | **0.865** | **+0.391** |
 | ASMI | 0.628 | **0.915** | **+0.287** | 0.587 | **0.914** | **+0.327** |
 
-### So sánh Tổng thể Ba Tập Dữ liệu
+### Overall Comparison Across 3 Datasets
 
-| Tập dữ liệu | Loại Nhãn MI | IMI AUROC (Zero) | IMI AUROC (Tuned) | IMI AUPRC (Tuned) | MI F1 (Tuned) |
+| Dataset | MI Label Type | IMI AUROC (Zero) | IMI AUROC (Tuned) | IMI AUPRC (Tuned) | MI F1 (Tuned) |
 |------------|-------------|-----------------|------------------|------------------|--------------|
 | **PTB-XL** (Source) | Direct (IMI) | — (trained here) | — | 0.495 | 0.627 |
 | **Georgia** (Target 1) | Proxy (Ischaemia) | 0.509 | **0.923** | **0.650** | 0.582 |
 | **PTB** (Target 2) | Direct (IMI) | 0.501 | **0.848** | **0.865** | **0.806** |
 
-### KẾT LUẬN PHASE 5
+### PHASE 5 CONCLUSION
 
-1. **Tính nhất quán đáng kinh ngạc của Zero-Shot**: Cả Georgia (0.509) và PTB (0.501) đều cho IMI AUROC xấp xỉ 0.50 khi zero-shot. Điều này chứng tỏ mô hình **không overfitting vào domain PTB-XL** — nó thực sự đang dựa trên đặc trưng hình thái học của sóng Q để đưa ra phán đoán, và khi Head chưa được thích nghi, nó từ chối đưa ra phán đoán ngẫu nhiên.
+1. **Incredible Zero-Shot Consistency**: Both Georgia (0.509) and PTB (0.501) yield an IMI AUROC of approximately 0.50 during zero-shot. This proves the model is **not overfitting to the PTB-XL domain** — it is truly relying on the morphological features of the Q-wave to make predictions, and when the Head is not adapted, it refuses to make random guesses.
 
-2. **Fine-Tuning hiệu quả phi thường**: Chỉ 15 epochs train MI Head nhỏ trên 320 bản ghi đã đẩy IMI AUPRC từ 0.474 lên **0.865** — tăng **+83%**. Điều này chỉ có thể xảy ra nếu Backbone đã nén đầy đủ thông tin hình thái của Q-wave vào trong không gian đặc trưng 256 chiều.
+2. **Phenomenal Fine-Tuning Efficiency**: Just 15 epochs of training a tiny MI Head on 320 records pushed IMI AUPRC from 0.474 to **0.865** — an **+83%** increase. This can only happen if the Backbone had fully compressed the morphological information of the Q-wave into its 256-dimensional feature space.
 
-3. **PTB tốt hơn Georgia vì Direct Label**: IMI AUPRC của PTB (0.865) vượt xa Georgia (0.650) vì PTB có nhãn thực (Inferior MI) thay vì nhãn đại diện (Inferior Ischaemia). Đây là bằng chứng cho thấy AUPRC thấp trên Georgia không phải do mô hình yếu, mà do **khó khăn vốn có của việc ánh xạ cross-task** (Infarction ≠ Ischaemia về mặt sinh lý).
+3. **PTB outperforms Georgia due to Direct Labels**: PTB's IMI AUPRC (0.865) far exceeds Georgia's (0.650) because PTB uses actual labels (Inferior MI) instead of proxy labels (Inferior Ischaemia). This is proof that the low AUPRC on Georgia is not due to a weak model, but due to the **inherent difficulty of cross-task mapping** (Infarction ≠ Ischaemia physiologically).
 
-4. **Kết luận cuối cùng cho Luận văn**: Mô hình Hybrid-Transformer đã được kiểm chứng trên **3 tập dữ liệu độc lập** từ 3 nguồn khác nhau (Đức 2000s, Mỹ 2020, Đức 1990s), đạt AUROC > 0.84 cho MI detection sau Head fine-tuning. Đây là minh chứng vững chắc cho tính **Universal ECG Feature Extractor** của kiến trúc được đề xuất.
+4. **Final Conclusion for the Thesis**: The Hybrid-Transformer model has been validated on **3 independent datasets** from 3 different sources (Germany 2000s, USA 2020, Germany 1990s), achieving an AUROC > 0.84 for MI detection after Head fine-tuning. This provides solid evidence for the **Universal ECG Feature Extractor** capability of the proposed architecture.
 
 ---
 
@@ -848,7 +846,7 @@ Checkpoint lưu tại: `checkpoints/finetune_ptb/`
 
 ### PTB Fine-Tune — MI Head (Test: 63 records)
 
-*(Arrhythmia Head bị loại do PTB không có nhãn AFIB/STACH/PVC/AFLT)*
+*(Arrhythmia Head is excluded because PTB lacks AFIB/STACH/PVC/AFLT labels)*
 
 | Label | Support | AUROC | AUPRC | Sensitivity | Specificity | Precision | F1 |
 |-------|---------|-------|-------|-------------|-------------|-----------|-----|
@@ -856,7 +854,7 @@ Checkpoint lưu tại: `checkpoints/finetune_ptb/`
 | ASMI | 28 | 0.867 | 0.888 | 0.750 | 0.886 | 0.840 | 0.792 |
 | **MACRO** | **55** | **0.862** | **0.851** | **0.764** | **0.832** | **0.782** | **0.771** |
 
-### So Sánh Trực Tiếp MI Head: Georgia vs PTB
+### Direct MI Head Comparison: Georgia vs PTB
 
 | Metric | IMI (Georgia) | IMI (PTB) | ASMI (Georgia) | ASMI (PTB) |
 |--------|--------------|-----------|----------------|------------|
@@ -867,7 +865,7 @@ Checkpoint lưu tại: `checkpoints/finetune_ptb/`
 | Precision | **0.778** | 0.724 | **0.857** | 0.840 |
 | F1 | 0.538 | **0.750** | 0.571 | **0.792** |
 
-**Phân tích Trade-off Sensitivity vs Specificity:**
-- **Georgia**: Specificity cực cao (0.987–0.995) nhưng Sensitivity thấp (0.41–0.43). Mô hình rất thận trọng — chỉ báo dương tính khi cực kỳ chắc chắn, nên ít báo nhầm nhưng bỏ sót nhiều ca thực sự.
-- **PTB**: Sensitivity cao hơn nhiều (0.75–0.78) và Specificity ở mức cân bằng (0.78–0.89). Đây là profile **phù hợp hơn cho screening** — phát hiện được đa số ca bệnh thực sự.
-- **Nguyên nhân**: Georgia dùng **Proxy label** (Ischaemia ≠ Infarction) — mô hình không tự tin khi đặc trưng ST khác với Q-wave. PTB dùng **Direct label** nên mô hình học được ánh xạ chính xác hơn, cho phép threshold linh hoạt hơn.
+**Sensitivity vs Specificity Trade-off Analysis:**
+- **Georgia**: Extremely high Specificity (0.987–0.995) but low Sensitivity (0.41–0.43). The model is very cautious — it only signals positive when extremely confident, resulting in few false alarms but many missed actual cases.
+- **PTB**: Much higher Sensitivity (0.75–0.78) and balanced Specificity (0.78–0.89). This is a **more suitable profile for clinical screening** — catching the majority of true cases.
+- **Root Cause**: Georgia uses **Proxy labels** (Ischaemia ≠ Infarction) — the model isn't confident when ST features differ from Q-waves. PTB uses **Direct labels**, allowing the model to learn accurate mappings and enabling a more flexible threshold.

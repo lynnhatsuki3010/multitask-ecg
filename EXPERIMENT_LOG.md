@@ -179,12 +179,4 @@ python scripts/02_train.py --config configs/experiments/split_e03_stratified_imi
 2. **SPLIT-E02 (random_grouped) is the clear winner** — Best IMI AUPRC (0.519) and Arrhy macro F1 (0.828). The 70/15/15 patient-grouped random split naturally produces a balanced training set size and representative test split.
 3. **SPLIT-E03 (stratified on IMI)** — Highest IMI AUROC (0.959) and IMI F1 (0.558) but Arrhy F1 dropped to 0.768 vs SPLIT-E02's 0.828. Stratifying only on IMI creates a lopsided fold structure that hurts Arrhythmia. AUPRC (0.506) is also lower than E02. Not the right tradeoff.
 
-→ **SPLIT-E02 config carries forward** to Stage 2 (Normalization).
-
----
-
-## Stage 2–6: (To be added after Stage 1 winner is determined)
-
-Stage 2 experiments (NORM-E01 to NORM-E03) will be created once Stage 1 winner is confirmed.
-
 

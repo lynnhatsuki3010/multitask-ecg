@@ -96,6 +96,9 @@ class Trainer:
         self.hrv_enabled = cfg.get("hrv", {}).get("enabled", True)
         eval_cfg = cfg.get("eval", {})
         self.val_tune_thresholds_every = int(eval_cfg.get("val_tune_thresholds_every", 0))
+        self.use_dynamic_threshold_inference = bool(eval_cfg.get("use_dynamic_threshold_inference", False))
+        self.arrhythmia_label_names_list = arrhythmia_label_names
+        self.mi_label_names_list = mi_label_names
 
         train_cfg = cfg.get("training", {})
         self.update_weights    = update_weights
@@ -357,8 +360,34 @@ class Trainer:
                         "hrv_valid": targets["hrv_valid"],
                     }
 
-                accum.update(preds, metric_targets, loss_dict, self.threshold)
-                
+                # Determine per-sample effective thresholds for metrics
+                # If model outputs predicted_thresholds and dynamic inference is on,
+                # use them; otherwise fall back to fixed self.threshold
+                use_dyn = (
+                    not train
+                    and self.use_dynamic_threshold_inference
+                    and "predicted_thresholds" in preds
+                )
+                if use_dyn:
+                    # predicted_thresholds: (B, num_arrhy + num_mi) in (0,1)
+                    pred_thr = preds["predicted_thresholds"].cpu()
+                    # Clamp to reasonable range to prevent degenerate thresholds
+                    pred_thr = pred_thr.clamp(0.1, 0.9)
+                    n_arrhy = len(self.arrhythmia_label_names)
+                    # Convert to per-class scalar dict (take batch mean as proxy threshold)
+                    # For MetricsAccumulator we still use fixed scalar per-class (batch mean)
+                    arrhy_thr_mean = pred_thr[:, :n_arrhy].mean(0)  # (n_arrhy,)
+                    mi_thr_mean = pred_thr[:, n_arrhy:].mean(0)     # (n_mi,)
+                    dyn_thr_dict = {}
+                    for i, name in enumerate(self.arrhythmia_label_names):
+                        dyn_thr_dict[name] = float(arrhy_thr_mean[i])
+                    for i, name in enumerate(self.mi_label_names):
+                        dyn_thr_dict[name] = float(mi_thr_mean[i])
+                    accum.update(preds, metric_targets, loss_dict, self.threshold,
+                                 dynamic_thresholds=dyn_thr_dict)
+                else:
+                    accum.update(preds, metric_targets, loss_dict, self.threshold)
+
                 # Update progress bar
                 loss_val = loss_dict["total"].item()
                 pbar.set_postfix(loss=f"{loss_val:.4f}")

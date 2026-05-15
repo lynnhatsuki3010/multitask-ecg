@@ -257,12 +257,21 @@ class MetricsAccumulator:
         targets: Dict[str, torch.Tensor],
         loss_dict: Optional[Dict[str, torch.Tensor]] = None,
         threshold: float = 0.5,
+        dynamic_thresholds: Optional[Dict[str, float]] = None,
     ):
-        """Accumulate a batch."""
+        """Accumulate a batch.
+        
+        Args:
+            dynamic_thresholds: Optional per-class threshold dict from DynamicThresholdHead.
+                                 If provided, overrides the scalar `threshold` for binarization.
+        """
         with torch.no_grad():
             # Arrhythmia
             a_score = torch.sigmoid(preds_raw["arrhythmia"]).cpu().numpy()
-            a_pred  = (a_score >= threshold).astype(float)
+            if dynamic_thresholds is not None:
+                a_pred = apply_thresholds(a_score, self.arrhythmia_labels, dynamic_thresholds, default=threshold)
+            else:
+                a_pred = (a_score >= threshold).astype(float)
             a_true  = targets["arrhythmia"].cpu().numpy()
             self.arrhythmia_score.append(a_score)
             self.arrhythmia_pred.append(a_pred)
@@ -270,7 +279,10 @@ class MetricsAccumulator:
 
             # MI
             mi_score = torch.sigmoid(preds_raw["mi"]).cpu().numpy()
-            mi_pred  = (mi_score >= threshold).astype(float)
+            if dynamic_thresholds is not None:
+                mi_pred = apply_thresholds(mi_score, self.mi_labels, dynamic_thresholds, default=threshold)
+            else:
+                mi_pred = (mi_score >= threshold).astype(float)
             mi_true  = targets["mi"].cpu().numpy()
             self.mi_score.append(mi_score)
             self.mi_pred.append(mi_pred)

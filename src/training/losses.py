@@ -76,6 +76,8 @@ class MultiTaskLoss(nn.Module):
         # ── Regularization tricks ───────────────────────────────────────────
         label_smoothing: float = 0.0,
         hrv_loss_type: str = "smooth_l1",
+        # ── Dynamic Threshold ────────────────────────────────────────────────
+        threshold_loss_weight: float = 0.05,  # small weight to not dominate
     ):
         super().__init__()
         self.arrhythmia_weight = arrhythmia_weight
@@ -90,6 +92,7 @@ class MultiTaskLoss(nn.Module):
         self.focal_alpha = focal_alpha
         self.arrhythmia_pos_weight = arrhythmia_pos_weight
         self.mi_pos_weight = mi_pos_weight
+        self.threshold_loss_weight = threshold_loss_weight
 
         if use_focal:
             self.arrhythmia_loss_fn = BinaryFocalLoss(
@@ -198,5 +201,23 @@ class MultiTaskLoss(nn.Module):
             + self.mi_weight       * losses["mi"]
             + self.hrv_weight      * losses["hrv"]
         )
+
+        # ── Dynamic Threshold Consistency Loss ───────────────────────────────
+        # If model outputs predicted_thresholds, train them with a consistency loss:
+        # For positive labels (y=1): threshold should be LOW  → target=0.0 (easy to exceed)
+        # For negative labels (y=0): threshold should be HIGH → target=1.0 (hard to exceed)
+        # This is equivalent to: threshold_target = 1 - label
+        if "predicted_thresholds" in preds and self.threshold_loss_weight > 0:
+            pred_thr = preds["predicted_thresholds"]  # (B, num_arrhy + num_mi)
+            num_arrhy = arrhy_targets.shape[1]
+            # Concatenate all classification targets into one tensor
+            all_targets = torch.cat([arrhy_targets, mi_targets], dim=-1)  # (B, num_classes)
+            # Target for threshold: 1 - label (positives → low threshold, negatives → high)
+            threshold_targets = 1.0 - all_targets.clamp(0, 1)
+            threshold_loss = F.mse_loss(pred_thr, threshold_targets)
+            losses["threshold"] = threshold_loss
+            losses["total"] = losses["total"] + self.threshold_loss_weight * threshold_loss
+        else:
+            losses["threshold"] = torch.tensor(0.0, device=preds["arrhythmia"].device)
 
         return losses

@@ -65,6 +65,7 @@ def build_model(
     mi_gradient_scale = float(model_cfg.get("mi_gradient_scale", 1.0))
     use_lead_group = bool(model_cfg.get("use_lead_group", True))
     use_task_token = bool(model_cfg.get("use_task_token", True))
+    use_dynamic_threshold = bool(model_cfg.get("use_dynamic_threshold", False))
 
     return ECGMultiTaskModel(
         backbone=backbone,
@@ -79,4 +80,5 @@ def build_model(
         mi_gradient_scale=mi_gradient_scale,
         use_lead_group=use_lead_group,
         use_task_token=use_task_token,
+        use_dynamic_threshold=use_dynamic_threshold,
     )

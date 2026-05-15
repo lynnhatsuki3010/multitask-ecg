@@ -7,6 +7,7 @@ from typing import Dict
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.models.backbones import AttentionPooling
 
@@ -23,6 +24,36 @@ class MLPHead(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+
+class DynamicThresholdHead(nn.Module):
+    """Predicts per-sample, per-class classification thresholds.
+
+    Given a patient's global feature representation, this lightweight
+    head outputs a threshold value tau_c in (0, 1) for each class c.
+    During inference, instead of comparing sigmoid(logit) >= 0.5,
+    we compare sigmoid(logit) >= tau_c (patient-specific).
+
+    The head is trained with a consistency loss: it is penalized
+    whenever the predicted threshold disagrees with the label
+    (i.e., output should be low when the class is positive, high otherwise).
+    This creates a soft auxiliary signal without requiring extra annotations.
+    """
+
+    def __init__(self, in_dim: int, num_classes: int, bottleneck: int = 64) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, bottleneck),
+            nn.LayerNorm(bottleneck),
+            nn.GELU(),
+            nn.Linear(bottleneck, num_classes),
+        )
+        # Initialize biases to predict 0.5 initially (sigmoid(0) = 0.5)
+        nn.init.zeros_(self.net[-1].bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Returns predicted thresholds in (0, 1) for each class."""
+        return torch.sigmoid(self.net(x))
 
 
 class TaskTokenPooling(nn.Module):
@@ -171,6 +202,7 @@ class ECGMultiTaskModel(nn.Module):
         mi_gradient_scale: float = 1.0,
         use_lead_group: bool = True,
         use_task_token: bool = True,
+        use_dynamic_threshold: bool = False,
     ) -> None:
         super().__init__()
         if num_mi_labels != 2:
@@ -181,6 +213,7 @@ class ECGMultiTaskModel(nn.Module):
         self.hrv_detach = hrv_detach
         self.mi_gradient_scale = mi_gradient_scale
         self.use_task_token = use_task_token
+        self.use_dynamic_threshold = use_dynamic_threshold
         shared_dim = backbone.output_dim
 
         self.sequence_pool = AttentionPooling(shared_dim)
@@ -203,6 +236,17 @@ class ECGMultiTaskModel(nn.Module):
             use_lead_group=use_lead_group,
             use_task_token=use_task_token,
         )
+
+        # --- Dynamic Threshold Head (optional) ---
+        # Predicts per-sample thresholds for each class from global shared features.
+        # Total num_classes = num_arrhythmia_labels + num_mi_labels
+        if use_dynamic_threshold:
+            total_classes = num_arrhythmia_labels + num_mi_labels
+            self.threshold_head = DynamicThresholdHead(
+                in_dim=shared_dim,
+                num_classes=total_classes,
+                bottleneck=max(32, shared_dim // 4),
+            )
 
         if hrv_enabled:
             self.hrv_head = MLPHead(
@@ -247,6 +291,13 @@ class ECGMultiTaskModel(nn.Module):
             "arrhythmia": self.arrhythmia_head(rhythm_features),
             "mi": self.mi_head(x, mi_shared, mi_seq),
         }
+
+        # Dynamic threshold prediction (patient-specific thresholds)
+        if self.use_dynamic_threshold:
+            # shared_features is detached so the threshold head doesn't
+            # affect the gradients of classification logits.
+            predicted_thresholds = self.threshold_head(shared_features.detach())
+            outputs["predicted_thresholds"] = predicted_thresholds
 
         if self.hrv_enabled:
             hrv_features = torch.cat([global_features, pooled_sequence], dim=-1)

@@ -94,4 +94,41 @@ Cấu hình này đã giải quyết trọn vẹn bài toán **Negative Transfer
 
 ---
 
-*(Đang được cập nhật)*
+## PHẦN 2: TINH CHỈNH VÀ THẨM ĐỊNH LÂM SÀNG
+
+### Giai đoạn 6: So sánh chiến lược Threshold (Nhánh: `TEST-DYNAMIC-THRESHOLD`)
+
+**Mục tiêu**: Trả lời câu hỏi nghiên cứu: Liệu việc để mô hình **tự dự đoán ngưỡng cắt** (Dynamic Threshold) có cải thiện macro-F1 so với dùng ngưỡng cố định 0.5 hay ngưỡng tìm kiếm trên Val Set (Per-class Tuning) không?
+
+**3 cấu hình so sánh** (tất cả đều dùng Golden Pipeline từ Phase 1):
+
+| ID | Config | Mô tả | File Config |
+| :--- | :--- | :--- | :--- |
+| `DYNTH-E01` | Fixed 0.5 | **Control**: ngưỡng cố định 0.5 | `configs/experiments/dynth_e01_fixed.yaml` |
+| `DYNTH-E02` | Per-class Tuning | Tìm ngưỡng F-beta tối ưu trên Val Set mỗi 5 epoch | `configs/experiments/dynth_e02_perclass.yaml` |
+| `DYNTH-E03` | Dynamic Head | Model tự dự đoán ngưỡng theo feature bệnh nhân | `configs/experiments/dynth_e03_dynamic.yaml` |
+
+**Lệnh chạy:**
+```bash
+python scripts/02_train.py --config configs/experiments/dynth_e01_fixed.yaml
+python scripts/02_train.py --config configs/experiments/dynth_e02_perclass.yaml
+python scripts/02_train.py --config configs/experiments/dynth_e03_dynamic.yaml
+```
+
+**Cơ chế hoạt động của Dynamic Threshold Head (`DynamicThresholdHead`):**
+- Module nhỏ: `Linear(256→64) → LayerNorm → GELU → Linear(64→7) → Sigmoid`
+- Nhận vào `shared_features` (256-dim, bị `.detach()` để không ảnh hưởng backbone).
+- Đầu ra: vector `τ ∈ (0,1)^7` — một ngưỡng riêng cho từng class của từng bệnh nhân.
+- **Consistency Loss**: khi class là positive (y=1) → target τ thấp; khi negative (y=0) → target τ cao. Loss weight = 0.05.
+
+### Kết quả So sánh Threshold (cập nhật sau khi train xong)
+
+| Run ID | Chiến lược Threshold | Arrhy (Macro F1) | MI (Macro F1) | IMI (AUPRC) | Checkpoint | Winner |
+| :--- | :--- | :---: | :---: | :---: | :--- | :---: |
+| `DYNTH-E01` | Fixed 0.5 | TBD | TBD | TBD | TBD | |
+| `DYNTH-E02` | Per-class Tuning (F-beta) | TBD | TBD | TBD | TBD | |
+| `DYNTH-E03` | Dynamic Threshold Head | TBD | TBD | TBD | TBD | |
+
+---
+
+*(Đang chờ kết quả training)*

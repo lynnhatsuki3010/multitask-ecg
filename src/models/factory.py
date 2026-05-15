@@ -63,6 +63,8 @@ def build_model(
     mi_branch_dim = int(model_cfg.get("mi_branch_dim", 128))
     hrv_enabled = bool(cfg.get("hrv", {}).get("enabled", True))
     mi_gradient_scale = float(model_cfg.get("mi_gradient_scale", 1.0))
+    use_lead_group = bool(model_cfg.get("use_lead_group", True))
+    use_task_token = bool(model_cfg.get("use_task_token", True))
 
     return ECGMultiTaskModel(
         backbone=backbone,
@@ -75,4 +77,6 @@ def build_model(
         dropout=dropout,
         hrv_detach=bool(model_cfg.get("hrv_detach", False)),
         mi_gradient_scale=mi_gradient_scale,
+        use_lead_group=use_lead_group,
+        use_task_token=use_task_token,
     )

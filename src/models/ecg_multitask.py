@@ -87,21 +87,35 @@ class MIHead(nn.Module):
     RECIPROCAL_LEADS = [0, 4]       # I, aVL
     ANTERIOR_LEADS = [6, 7, 8, 9]   # V1, V2, V3, V4
 
-    def __init__(self, shared_dim: int, branch_dim: int, dropout: float) -> None:
+    def __init__(self, shared_dim: int, branch_dim: int, dropout: float, use_lead_group: bool = True, use_task_token: bool = True) -> None:
         super().__init__()
-        self.imi_token_pool = TaskTokenPooling(shared_dim, dropout)
-        self.asmi_token_pool = TaskTokenPooling(shared_dim, dropout)
-        self.inferior_encoder = LeadGroupEncoder(len(self.INFERIOR_LEADS), branch_dim, dropout)
-        self.reciprocal_encoder = LeadGroupEncoder(len(self.RECIPROCAL_LEADS), branch_dim // 2, dropout)
-        self.anterior_encoder = LeadGroupEncoder(len(self.ANTERIOR_LEADS), branch_dim, dropout)
+        self.use_lead_group = use_lead_group
+        self.use_task_token = use_task_token
+
+        imi_in_dim = shared_dim
+        asmi_in_dim = shared_dim
+
+        if use_task_token:
+            self.imi_token_pool = TaskTokenPooling(shared_dim, dropout)
+            self.asmi_token_pool = TaskTokenPooling(shared_dim, dropout)
+            imi_in_dim += shared_dim
+            asmi_in_dim += shared_dim
+
+        if use_lead_group:
+            self.inferior_encoder = LeadGroupEncoder(len(self.INFERIOR_LEADS), branch_dim, dropout)
+            self.reciprocal_encoder = LeadGroupEncoder(len(self.RECIPROCAL_LEADS), branch_dim // 2, dropout)
+            self.anterior_encoder = LeadGroupEncoder(len(self.ANTERIOR_LEADS), branch_dim, dropout)
+            imi_in_dim += branch_dim + branch_dim // 2
+            asmi_in_dim += branch_dim
+
         self.imi_head = MLPHead(
-            shared_dim * 2 + branch_dim + branch_dim // 2,
+            imi_in_dim,
             1,
             hidden_dim=branch_dim,
             dropout=dropout,
         )
         self.asmi_head = MLPHead(
-            shared_dim * 2 + branch_dim,
+            asmi_in_dim,
             1,
             hidden_dim=branch_dim,
             dropout=dropout,
@@ -113,13 +127,20 @@ class MIHead(nn.Module):
         shared_features: torch.Tensor,
         sequence_features: torch.Tensor,
     ) -> torch.Tensor:
-        imi_tokens = self.imi_token_pool(sequence_features)
-        asmi_tokens = self.asmi_token_pool(sequence_features)
-        inferior = self.inferior_encoder(signal[:, self.INFERIOR_LEADS, :])
-        reciprocal = self.reciprocal_encoder(signal[:, self.RECIPROCAL_LEADS, :])
-        anterior = self.anterior_encoder(signal[:, self.ANTERIOR_LEADS, :])
-        imi = self.imi_head(torch.cat([shared_features, imi_tokens, inferior, reciprocal], dim=-1))
-        asmi = self.asmi_head(torch.cat([shared_features, asmi_tokens, anterior], dim=-1))
+        imi_feats = [shared_features]
+        asmi_feats = [shared_features]
+
+        if self.use_task_token:
+            imi_feats.append(self.imi_token_pool(sequence_features))
+            asmi_feats.append(self.asmi_token_pool(sequence_features))
+
+        if self.use_lead_group:
+            imi_feats.append(self.inferior_encoder(signal[:, self.INFERIOR_LEADS, :]))
+            imi_feats.append(self.reciprocal_encoder(signal[:, self.RECIPROCAL_LEADS, :]))
+            asmi_feats.append(self.anterior_encoder(signal[:, self.ANTERIOR_LEADS, :]))
+
+        imi = self.imi_head(torch.cat(imi_feats, dim=-1))
+        asmi = self.asmi_head(torch.cat(asmi_feats, dim=-1))
         return torch.cat([imi, asmi], dim=-1)
 
 
@@ -148,6 +169,8 @@ class ECGMultiTaskModel(nn.Module):
         dropout: float,
         hrv_detach: bool = False,
         mi_gradient_scale: float = 1.0,
+        use_lead_group: bool = True,
+        use_task_token: bool = True,
     ) -> None:
         super().__init__()
         if num_mi_labels != 2:
@@ -157,17 +180,29 @@ class ECGMultiTaskModel(nn.Module):
         self.hrv_enabled = hrv_enabled
         self.hrv_detach = hrv_detach
         self.mi_gradient_scale = mi_gradient_scale
+        self.use_task_token = use_task_token
         shared_dim = backbone.output_dim
 
-        self.arrhythmia_pool = TaskTokenPooling(shared_dim, dropout)
+        self.sequence_pool = AttentionPooling(shared_dim)
+
+        arrhy_in_dim = shared_dim
+        if use_task_token:
+            self.arrhythmia_pool = TaskTokenPooling(shared_dim, dropout)
+            arrhy_in_dim += shared_dim
+
         self.arrhythmia_head = MLPHead(
-            shared_dim * 2,
+            arrhy_in_dim,
             num_arrhythmia_labels,
             hidden_dim=head_hidden_dim,
             dropout=dropout,
         )
-        self.mi_head = MIHead(shared_dim=shared_dim, branch_dim=mi_branch_dim, dropout=dropout)
-        self.sequence_pool = AttentionPooling(shared_dim)
+        self.mi_head = MIHead(
+            shared_dim=shared_dim, 
+            branch_dim=mi_branch_dim, 
+            dropout=dropout,
+            use_lead_group=use_lead_group,
+            use_task_token=use_task_token,
+        )
 
         if hrv_enabled:
             self.hrv_head = MLPHead(
@@ -191,9 +226,13 @@ class ECGMultiTaskModel(nn.Module):
         global_features = backbone_out["global_features"]
         sequence_features = backbone_out["sequence_features"]
         pooled_sequence = self.sequence_pool(sequence_features)
-        arrhythmia_tokens = self.arrhythmia_pool(sequence_features)
-        rhythm_features = torch.cat([global_features, arrhythmia_tokens], dim=-1)
+        
         shared_features = global_features + pooled_sequence
+
+        rhythm_feats = [global_features]
+        if self.use_task_token:
+            rhythm_feats.append(self.arrhythmia_pool(sequence_features))
+        rhythm_features = torch.cat(rhythm_feats, dim=-1)
 
         # Gradient isolation: scale MI gradients flowing back into shared backbone
         # MI head still gets full-resolution features from LeadGroupEncoder (raw signal)
@@ -227,8 +266,9 @@ class ECGMultiTaskModel(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = False
         
-        for param in self.arrhythmia_pool.parameters():
-            param.requires_grad = False
+        if self.use_task_token:
+            for param in self.arrhythmia_pool.parameters():
+                param.requires_grad = False
             
         for param in self.arrhythmia_head.parameters():
             param.requires_grad = False
@@ -249,7 +289,8 @@ class ECGMultiTaskModel(nn.Module):
     def _apply_phase2_eval(self) -> None:
         """Helper to force frozen modules into eval mode (to freeze BatchNorm stats and Dropout)."""
         self.backbone.eval()
-        self.arrhythmia_pool.eval()
+        if self.use_task_token:
+            self.arrhythmia_pool.eval()
         self.arrhythmia_head.eval()
         self.sequence_pool.eval()
         if self.hrv_enabled:

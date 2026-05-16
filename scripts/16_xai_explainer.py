@@ -40,15 +40,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import pandas as pd
 import yaml
 
 # ── project root on path ────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.data.dataset import ECGDataset
+from src.data.preprocessing import PTBXLDataset
 from src.models.factory import build_model
-from src.training.trainer import load_config_and_labels
 
 # ── lead names (standard 12-lead order) ─────────────────────────────────────
 LEAD_NAMES = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"]
@@ -237,6 +237,70 @@ def _plot_multi_label(attn_maps: dict[str, np.ndarray],
 # Core routine
 # ────────────────────────────────────────────────────────────────────────────
 
+def _load_data(cfg: dict, split: str, ckpt_cfg: dict):
+    """
+    Replicates the data loading pattern from 02_train.py.
+    Returns (dataset, label_names_all, arrhythmia_labels, mi_labels, sub_df, indices, patient_col)
+    """
+    fs      = ckpt_cfg["dataset"]["sampling_rate"]
+    length  = ckpt_cfg["dataset"]["signal_length"]
+    processed = f"{ckpt_cfg['paths']['processed']}_{fs}hz"
+    splits_dir = f"{ckpt_cfg['paths']['splits']}_{fs}hz"
+    raw_path   = ckpt_cfg["paths"]["raw_data"]
+    prep       = ckpt_cfg.get("preprocessing", {})
+
+    meta_path = os.path.join(processed, "metadata.csv")
+    lm_path   = os.path.join(processed, "label_matrix.npy")
+    hrv_path  = os.path.join(processed, "hrv_matrix.npy")
+
+    df           = pd.read_csv(meta_path, index_col="ecg_id")
+    label_matrix = np.load(lm_path)
+    hrv_matrix   = np.load(hrv_path) if os.path.exists(hrv_path) else None
+
+    # Load split indices
+    idx_path = os.path.join(splits_dir, f"{split}_indices.npy")
+    if os.path.exists(idx_path):
+        indices = np.load(idx_path)
+    else:
+        # Fall back to strat_fold column
+        test_fold = ckpt_cfg["dataset"]["test_fold"]
+        val_fold  = ckpt_cfg["dataset"]["val_fold"]
+        fold_arr  = df["strat_fold"].values
+        all_idx   = np.arange(len(df))
+        if split == "test":
+            indices = all_idx[fold_arr == test_fold]
+        elif split == "val":
+            indices = all_idx[fold_arr == val_fold]
+        else:
+            indices = all_idx[(fold_arr != test_fold) & (fold_arr != val_fold)]
+
+    sub_df  = df.iloc[indices].copy()
+    sub_lm  = label_matrix[indices]
+    sub_hrv = hrv_matrix[indices] if hrv_matrix is not None else None
+
+    dataset = PTBXLDataset(
+        metadata      = sub_df,
+        label_matrix  = sub_lm,
+        hrv_matrix    = sub_hrv,
+        base_path     = raw_path,
+        sampling_rate = fs,
+        target_length = length,
+        bandpass      = (prep.get("bandpass_low", 0.5), prep.get("bandpass_high", 40.0)),
+        notch         = prep.get("notch_freq", 50.0),
+        normalize     = prep.get("normalize", "zscore"),
+        augment       = False,  # no augmentation for XAI
+    )
+
+    all_labels        = [l["name"] for l in ckpt_cfg["labels"]]
+    arrhythmia_labels = [l["name"] for l in ckpt_cfg["labels"] if l["task"] == "arrhythmia"]
+    mi_labels         = [l["name"] for l in ckpt_cfg["labels"] if l["task"] == "mi"]
+
+    # Store patient_id on sub_df if available
+    patient_col = ckpt_cfg["dataset"].get("split_group_key", "patient_id")
+
+    return dataset, all_labels, arrhythmia_labels, mi_labels, sub_df, indices, patient_col
+
+
 def generate_xai(
     checkpoint_dir: str,
     config_path: str,
@@ -257,13 +321,10 @@ def generate_xai(
     with open(ckpt_dir / "config_snapshot.yaml", encoding="utf-8") as f:
         ckpt_cfg = yaml.safe_load(f)
 
-    arrhythmia_labels = [l["name"] for l in ckpt_cfg["labels"]
-                         if l["task"] == "arrhythmia"]
-    mi_labels         = [l["name"] for l in ckpt_cfg["labels"]
-                         if l["task"] == "mi"]
-    all_labels        = arrhythmia_labels + mi_labels
+    dataset, all_labels, arrhy_labels, mi_labels, meta_df, indices, patient_col = _load_data(cfg, split, ckpt_cfg)
+    print(f"[XAI] {split} set: {len(dataset)} samples")
 
-    model = build_model(ckpt_cfg, len(arrhythmia_labels), len(mi_labels))
+    model = build_model(ckpt_cfg, len(arrhy_labels), len(mi_labels))
     best_ckpt = ckpt_dir / "best_model.pt"
     state = torch.load(best_ckpt, map_location="cpu")
     model.load_state_dict(state, strict=False)
@@ -335,9 +396,9 @@ def generate_xai(
         # Extract attention maps
         attn_maps = extract_attention_maps(model, sig_len)
 
-        # Patient/ECG identifier
+        # Patient/ECG identifier from sample dict
         meta_id   = sample.get("ecg_id", idx)
-        patient   = sample.get("patient_id", "unk")
+        patient   = meta_df.iloc[idx].get(patient_col, "unk") if patient_col in meta_df.columns else "unk"
         file_stem = f"pat{patient}_ecg{meta_id}"
 
         # ── 7. Save image(s) ─────────────────────────────────────────────────

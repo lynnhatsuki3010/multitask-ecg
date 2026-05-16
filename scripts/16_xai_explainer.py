@@ -306,8 +306,8 @@ def generate_xai(
     config_path: str,
     split: str = "test",
     max_per_class: int = 5,
+    max_total: int = 50,
     out_root: str = "artifacts/xai",
-    fs: int = 500,
     device: str | None = None,
 ):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -439,8 +439,9 @@ def generate_xai(
         total_saved = sum(combo_count.values())
         print(f"[XAI] [{total_saved:4d}] {combo_key:30s}  -> {primary_path.name}")
 
-        # Stop if every combo is saturated
-        if all(v >= max_per_class for v in combo_count.values()):
+        # Stop once we've collected enough across all combos
+        if total_saved >= max_total:
+            print(f"[XAI] Reached max_total={max_total}. Stopping early.")
             break
 
     # ── 8. Summary ───────────────────────────────────────────────────────────
@@ -466,6 +467,8 @@ def _parse_args() -> argparse.Namespace:
                    help="Which dataset split to run XAI on. Default: test.")
     p.add_argument("--max-per-class", type=int, default=5,
                    help="Maximum heatmaps saved per label/combo. Default: 5.")
+    p.add_argument("--max-total", type=int, default=50,
+                   help="Hard cap on total images saved (prevents long runs on rare combos). Default: 50.")
     p.add_argument("--out", default="artifacts/xai",
                    help="Output root directory. Default: artifacts/xai.")
     p.add_argument("--fs", type=int, default=500,
@@ -482,7 +485,7 @@ if __name__ == "__main__":
         config_path=args.config,
         split=args.split,
         max_per_class=args.max_per_class,
+        max_total=args.max_total,
         out_root=args.out,
-        fs=args.fs,
         device=args.device,
     )

@@ -1,84 +1,71 @@
 # ECG Multi-Task Transformer
 
-Dự án phân tích ECG 12 chuyển đạo trên PTB-XL dataset với Transformer + multi-task learning.
+A deep learning project for 12-lead ECG analysis on the PTB-XL dataset utilizing a Hybrid Transformer architecture and multi-task learning.
 
-## Cấu trúc thư mục
+## Directory Structure
 ```
 ECG_HRV/
 ├── data/
-│   ├── raw/PTB-XL/          ← Dataset gốc (đã có)
-│   ├── processed/           ← metadata.csv, label_matrix.npy, hrv_matrix.npy
-│   └── splits/              ← train/val/test split indices
+│   ├── raw/PTB-XL/          ← Raw dataset
+│   ├── processed/           ← Preprocessed metadata and matrices
+│   └── splits/              ← Train/val/test split indices
 ├── src/
-│   ├── data/
-│   │   ├── label_builder.py ← Xây dựng label matrix từ scp_codes
-│   │   ├── hrv_features.py  ← Tính RMSSD, SDNN, mean HR
-│   │   └── preprocessing.py ← Lọc tín hiệu, Dataset class
-│   ├── models/
-│   │   ├── ecg_transformer.py ← Patch-based Transformer backbone
-│   │   └── multitask_head.py  ← Arrhythmia + MI + HRV heads
-│   ├── training/
-│   │   ├── losses.py        ← Multi-task loss (BCE + MSE)
-│   │   └── trainer.py       ← Training loop, early stopping, checkpoint
-│   └── utils/
-│       └── metrics.py       ← AUROC, AUPRC, F1, HRV MAE/RMSE
-├── configs/
-│   └── config.yaml          ← Toàn bộ hyperparameter
-├── scripts/
-│   ├── 01_build_metadata.py ← Preprocessing + tạo splits
-│   └── 02_train.py          ← Training script chính
-└── checkpoints/             ← Saved models (tạo tự động)
+│   ├── data/                ← Data loading, preprocessing, and label extraction
+│   ├── models/              ← Hybrid Transformer & Multi-task heads
+│   ├── training/            ← Custom training loop & loss functions
+│   └── utils/               ← Evaluation metrics
+├── configs/                 
+│   └── experiments/         ← Configuration files (Ablation, X-Val, Final)
+├── scripts/                 ← Executable scripts for pipeline stages
+└── checkpoints/             ← Auto-generated model checkpoints
 ```
 
-## Cài đặt
+## Installation
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Chạy
+## Usage
 
-### Bước 1: Preprocessing (bắt buộc chạy trước)
+### 1. Data Preprocessing (Required)
 ```bash
-# Full (có HRV, ~30 phút)
+# Full preprocessing (Includes HRV, ~30 mins)
 python scripts/01_build_metadata.py
 
-# Không HRV (nhanh hơn, ~5 phút)
+# Without HRV (Faster, ~5 mins)
 python scripts/01_build_metadata.py --no-hrv
 
-# Test nhanh chỉ 100 samples
+# Quick test (100 samples)
 python scripts/01_build_metadata.py --max-samples 100 --no-hrv
 ```
 
-### Bước 2: Training
+### 2. Training
 ```bash
-# Full training
-python scripts/02_train.py
+# Train using a specific configuration
+python scripts/02_train.py --config configs/experiments/final/final_e01_seed42.yaml
 
-# Debug mode (200 samples, 3 epochs — để kiểm tra pipeline)
-python scripts/02_train.py --debug
+# Debug mode (200 samples, 3 epochs)
+python scripts/02_train.py --config configs/experiments/final/final_e01_seed42.yaml --debug
 
-# Không HRV task
-python scripts/02_train.py --no-hrv
+# Override hyperparameters from CLI
+python scripts/02_train.py --config configs/experiments/final/final_e01_seed42.yaml --epochs 30 --batch-size 32 --lr 5e-5
 
-# Override hyperparameters
-python scripts/02_train.py --epochs 30 --batch-size 32 --lr 5e-5
-
-# Resume từ checkpoint
-python scripts/02_train.py --resume checkpoints/epoch_010.pth
+# Resume from checkpoint
+python scripts/02_train.py --config configs/experiments/final/final_e01_seed42.yaml --resume checkpoints/run_xxx/epoch_010.pth
 ```
 
-## Nhãn (7 labels)
+## Supported Labels
 
-| Label | Task | Diễn giải |
+| Label | Task | Description |
 |-------|------|-----------|
-| NORM  | normal | ECG bình thường |
-| AFIB  | arrhythmia | Rung nhĩ |
-| STACH | arrhythmia | Nhịp nhanh xoang |
-| SBRAD | arrhythmia | Nhịp chậm xoang |
-| AFLT  | arrhythmia | Cuồng nhĩ |
-| IMI   | mi | Nhồi máu cơ tim vùng dưới |
-| ASMI  | mi | Nhồi máu cơ tim anteroseptal |
+| NORM  | normal | Normal ECG |
+| AFIB  | arrhythmia | Atrial Fibrillation |
+| STACH | arrhythmia | Sinus Tachycardia |
+| SBRAD | arrhythmia | Sinus Bradycardia |
+| AFLT  | arrhythmia | Atrial Flutter |
+| IMI   | mi | Inferior Myocardial Infarction |
+| ASMI  | mi | Anteroseptal Myocardial Infarction |
 
 ## Model Architecture
 
@@ -95,25 +82,25 @@ Input (B, 12, 1000)
 ```
 
 ## Outputs (checkpoints/)
-- `best_model.pth`   — best val AUROC checkpoint
-- `epoch_XXX.pth`    — periodic checkpoints
-- `history.json`     — training/val metrics per epoch
-- `test_metrics.json` — final test evaluation
+- `best_model.pth`: Best validation AUROC checkpoint.
+- `epoch_XXX.pth`: Periodic checkpoints.
+- `history.json`: Epoch-wise training and validation metrics.
+- `test_metrics.json`: Final evaluation results.
 
-## Giải thích Mô hình (XAI - Explainable AI)
+## Explainable AI (XAI)
 
-Module XAI sử dụng attention weights từ Transformer Encoder để làm nổi bật (highlight) các vùng tín hiệu ECG mà mô hình tập trung vào khi đưa ra dự đoán các bệnh lý loạn nhịp và nhồi máu cơ tim.
+The XAI module extracts attention weights from the Transformer Encoder to generate heatmaps, highlighting the specific ECG segments the model focuses on for its predictions.
 
 ```bash
-# Tạo XAI heatmaps cho test set, phân loại rõ True Positives và False Positives
+# Generate XAI heatmaps for the test set, segregated by TP/FP
 python scripts/16_xai_explainer.py \
     --checkpoint checkpoints/run_YYYYMMDD_HHMMSS \
-    --config configs/experiments/dynamic_threshold/dynth_e03_dynamic.yaml \
+    --config configs/experiments/final/final_e01_seed42.yaml \
     --split test \
     --max-per-class 5 \
     --max-total 50
 ```
 
-Ảnh đầu ra sẽ được tự động lưu vào `artifacts/xai/` với cấu trúc thư mục rõ ràng:
-- `artifacts/xai/TP/{label}/`: Các ca bệnh dự đoán **ĐÚNG** (True Positives).
-- `artifacts/xai/FP/{label}/`: Các ca bệnh dự đoán **SAI** (False Positives).
+Heatmaps are automatically saved to `artifacts/xai/` with the following structure:
+- `artifacts/xai/TP/{label}/`: **True Positives** (Correct predictions).
+- `artifacts/xai/FP/{label}/`: **False Positives** (Incorrect predictions).

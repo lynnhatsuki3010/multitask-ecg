@@ -328,15 +328,15 @@ def generate_xai(
     hrv_enabled     = ckpt_cfg.get("hrv", {}).get("enabled", False)
     num_hrv_targets = len(ckpt_cfg.get("hrv", {}).get("features", ["rmssd", "sdnn", "mean_hr"])) if hrv_enabled else 3
     model = build_model(ckpt_cfg, len(arrhy_labels), len(mi_labels), num_hrv_targets)
-    best_ckpt = ckpt_dir / "best_model.pt"
-    state = torch.load(best_ckpt, map_location="cpu")
+    best_ckpt = ckpt_dir / "best_model.pth"
+    state = torch.load(best_ckpt, map_location="cpu", weights_only=True)
     model.load_state_dict(state, strict=False)
     model.to(device).eval()
 
     print(f"[XAI] Model loaded from: {best_ckpt}")
 
     # ── 3. Load tuned thresholds (from per-class tuning if available) ────────
-    threshold_path = ckpt_dir / "best_thresholds.json"
+    threshold_path = ckpt_dir / "thresholds.json"
     if threshold_path.exists():
         thresholds = json.loads(threshold_path.read_text(encoding="utf-8"))
         print(f"[XAI] Using per-class thresholds: {thresholds}")
@@ -367,7 +367,8 @@ def generate_xai(
         all_probs  = np.concatenate([arrhy_prob, mi_prob])
 
         predicted = []
-        for j, lbl in enumerate(all_labels):
+        combined_labels = arrhy_labels + mi_labels
+        for j, lbl in enumerate(combined_labels):
             t = thresholds.get(lbl, 0.5)
             if all_probs[j] >= t:
                 predicted.append(lbl)

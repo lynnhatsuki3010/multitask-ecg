@@ -70,6 +70,7 @@ class TaskTokenPooling(nn.Module):
         projected = torch.tanh(self.score_proj(tokens))
         scores = torch.matmul(projected, self.query)
         weights = torch.softmax(scores, dim=1).unsqueeze(-1)
+        self.last_weights = weights.detach()  # Saved for XAI
         pooled = torch.sum(tokens * weights, dim=1)
         return self.dropout(pooled)
 

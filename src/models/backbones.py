@@ -125,6 +125,7 @@ class AttentionPooling(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         weights = torch.softmax(self.score(x), dim=1)
+        self.last_weights = weights.detach()  # Saved for XAI: (B, T, 1)
         return torch.sum(weights * x, dim=1)
 
 

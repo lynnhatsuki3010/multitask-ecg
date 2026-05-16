@@ -322,6 +322,7 @@ def generate_xai(
         ckpt_cfg = yaml.safe_load(f)
 
     dataset, all_labels, arrhy_labels, mi_labels, meta_df, indices, patient_col = _load_data(cfg, split, ckpt_cfg)
+    fs = ckpt_cfg["dataset"]["sampling_rate"]
     print(f"[XAI] {split} set: {len(dataset)} samples")
 
     model = build_model(ckpt_cfg, len(arrhy_labels), len(mi_labels))

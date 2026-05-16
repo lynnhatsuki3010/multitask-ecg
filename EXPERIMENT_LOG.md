@@ -104,15 +104,15 @@ Cấu hình này đã giải quyết trọn vẹn bài toán **Negative Transfer
 
 | ID | Config | Mô tả | File Config |
 | :--- | :--- | :--- | :--- |
-| `DYNTH-E01` | Fixed 0.5 | **Control**: ngưỡng cố định 0.5 | `configs/experiments/dynth_e01_fixed.yaml` |
-| `DYNTH-E02` | Per-class Tuning | Tìm ngưỡng F-beta tối ưu trên Val Set mỗi 5 epoch | `configs/experiments/dynth_e02_perclass.yaml` |
-| `DYNTH-E03` | Dynamic Head | Model tự dự đoán ngưỡng theo feature bệnh nhân | `configs/experiments/dynth_e03_dynamic.yaml` |
+| `DYNTH-E01` | Fixed 0.5 | **Control**: ngưỡng cố định 0.5 | `configs/experiments/dynamic_threshold/dynth_e01_fixed.yaml` |
+| `DYNTH-E02` | Per-class Tuning | Tìm ngưỡng F-beta tối ưu trên Val Set mỗi 5 epoch | `configs/experiments/dynamic_threshold/dynth_e02_perclass.yaml` |
+| `DYNTH-E03` | Dynamic Head | Model tự dự đoán ngưỡng theo feature bệnh nhân | `configs/experiments/dynamic_threshold/dynth_e03_dynamic.yaml` |
 
 **Lệnh chạy:**
 ```bash
-python scripts/02_train.py --config configs/experiments/dynth_e01_fixed.yaml
-python scripts/02_train.py --config configs/experiments/dynth_e02_perclass.yaml
-python scripts/02_train.py --config configs/experiments/dynth_e03_dynamic.yaml
+python scripts/02_train.py --config configs/experiments/dynamic_threshold/dynth_e01_fixed.yaml
+python scripts/02_train.py --config configs/experiments/dynamic_threshold/dynth_e02_perclass.yaml
+python scripts/02_train.py --config configs/experiments/dynamic_threshold/dynth_e03_dynamic.yaml
 ```
 
 **Cơ chế hoạt động của Dynamic Threshold Head (`DynamicThresholdHead`):**

@@ -1,19 +1,14 @@
-# SPLIT-E01: PTB-XL native strat_fold (Baseline Split)
-# Identical to baseline.yaml — PTB-XL fold 10 = test, fold 9 = val
-# This is the community standard split used in most published papers.
+# LOSS-E02: Focal Loss
+# Baseline inherited: SPLIT-E02 (random_grouped), NORM-E01 (zscore)
 #
-# BUILD CMD:
-#   python scripts/01_build_metadata.py --config configs/experiments/split_e01_strat_fold.yaml --no-hrv
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/split_e01_strat_fold.yaml
-# BRANCH: SPLIT-E01
-
-_inherit: baseline  # conceptual only — manually copied from baseline.yaml
+#   python scripts/02_train.py --config configs/experiments/ablation/
+# BRANCH: STAGE3-LOSS
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_split_e01"
-  splits: "data/splits_split_e01"
+  processed: "data/processed_split_e02" # Reusing SPLIT-E02 data
+  splits: "data/splits_split_e02"
   checkpoints: "checkpoints"
 
 dataset:
@@ -25,11 +20,9 @@ dataset:
     IMI: 80
   normal_label: NORM
   normal_mode: exclusive
-  split_method: strat_fold   # ← THIS IS THE VARIABLE BEING TESTED
-  test_fold: 10
-  val_fold: 9
-  split_seed: 42
+  split_method: random_grouped
   split_group_key: patient_id
+  split_seed: 42
   split_train_ratio: 0.70
   split_val_ratio: 0.15
   split_test_ratio: 0.15
@@ -37,6 +30,8 @@ dataset:
   split_test_fold_index: 0
   split_val_fold_index: null
   split_stratify_label: null
+  test_fold: 10
+  val_fold: 9
 
 labels:
   - {name: NORM,  task: normal,     index: 0}
@@ -100,8 +95,8 @@ training:
     hrv: 0.0
   label_smoothing: 0.0
   hrv_loss: smooth_l1
-  use_pos_weight: false
-  use_focal: false
+  use_pos_weight: false  # ← TEST VARIABLE
+  use_focal: true        # ← TEST VARIABLE
   focal_gamma: 2.0
   focal_alpha: 0.25
   max_pos_weight: 30.0

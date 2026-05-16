@@ -1,9 +1,12 @@
-# FINAL-E02: Full 50-epoch run — Best Stack, Seed 123 (Stability Check)
-# Stack: random_grouped + zscore + Focal Loss + GradIso(0.3) + Noise+Warp + Uniform
+# SPLIT-E02: random_grouped by patient_id (seed=42)
+# Groups all records of a patient together before random 70/15/15 split.
+# Ensures no patient leakage across splits.
 #
+# BUILD CMD:
+#   python scripts/01_build_metadata.py --config configs/experiments/ablation/ --no-hrv
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/final_e02_seed123.yaml
-# BRANCH: STAGE6-FINAL
+#   python scripts/02_train.py --config configs/experiments/ablation/
+# BRANCH: SPLIT-E02
 
 paths:
   raw_data: "data/raw/PTB-XL"
@@ -20,7 +23,7 @@ dataset:
     IMI: 80
   normal_label: NORM
   normal_mode: exclusive
-  split_method: random_grouped
+  split_method: random_grouped   # ← THIS IS THE VARIABLE BEING TESTED
   split_group_key: patient_id
   split_seed: 42
   split_train_ratio: 0.70
@@ -67,26 +70,26 @@ model:
   head_hidden_dim: 128
   mi_branch_dim: 128
   dropout: 0.15
-  mi_gradient_scale: 0.3
+  mi_gradient_scale: 1.0
   hrv_detach: false
 
 augmentation:
   aug_lead_dropout: false
   aug_random_crop: false
-  aug_baseline_wander: true
-  aug_time_warp: true
+  aug_baseline_wander: false
+  aug_time_warp: false
   aug_mixup: false
   mixup_alpha: 0.2
 
 training:
   batch_size: 96
-  epochs: 50
+  epochs: 15
   freeze_backbone_at_epoch: -1
   lr: 1.0e-4
   weight_decay: 1.0e-3
   mi_lr_multiplier: 1.0
   scheduler: cosine
-  warmup_epochs: 5
+  warmup_epochs: 2
   loss_weights:
     arrhythmia: 1.0
     mi: 1.0
@@ -96,23 +99,23 @@ training:
   label_smoothing: 0.0
   hrv_loss: smooth_l1
   use_pos_weight: false
-  use_focal: true
+  use_focal: false
   focal_gamma: 2.0
   focal_alpha: 0.25
   max_pos_weight: 30.0
   pos_weight_power: 0.75
   weighted_sampler: false
-  seed: 123               # ← Different seed
+  seed: 42
   num_workers: 0
   pin_memory: true
-  save_every: 10
-  early_stopping_patience: 20
+  save_every: 5
+  early_stopping_patience: 15
   monitor_metric: imi_auprc
 
 eval:
   metrics: [auroc, auprc, f1, accuracy]
   threshold: 0.5
-  val_tune_thresholds_every: 5
+  val_tune_thresholds_every: 0
   threshold_search:
     min_threshold: 0.15
     min_pos_count: 20

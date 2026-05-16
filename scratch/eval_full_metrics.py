@@ -155,14 +155,14 @@ def load_model(ckpt_folder, device):
     cfg_path = None
     # Try config snapshot from original training run first
     for candidate in [
-        "configs/experiments/xval_georgia_finetune.yaml",
-        "configs/experiments/xval_ptb_finetune.yaml",
+        "configs/experiments/cross_validation/xval_georgia_finetune.yaml",
+        "configs/experiments/cross_validation/xval_ptb_finetune.yaml",
     ]:
         if os.path.exists(candidate):
             cfg_path = candidate
 
     # Use the finetune config (both share same model architecture)
-    with open("configs/experiments/xval_ptb_finetune.yaml") as f:
+    with open("configs/experiments/cross_validation/xval_ptb_finetune.yaml") as f:
         cfg = yaml.safe_load(f)
     cfg["hrv"] = {"enabled": False}
 

@@ -1,8 +1,8 @@
-# LOSS-E01: BCE with Positive Weighting (pos_weight)
+# LOSS-E03: Focal Loss + Gradient Isolation
 # Baseline inherited: SPLIT-E02 (random_grouped), NORM-E01 (zscore)
 #
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/loss_e01_posweight.yaml
+#   python scripts/02_train.py --config configs/experiments/ablation/
 # BRANCH: STAGE3-LOSS
 
 paths:
@@ -67,7 +67,7 @@ model:
   head_hidden_dim: 128
   mi_branch_dim: 128
   dropout: 0.15
-  mi_gradient_scale: 1.0
+  mi_gradient_scale: 0.3    # ← TEST VARIABLE
   hrv_detach: false
 
 augmentation:
@@ -95,8 +95,8 @@ training:
     hrv: 0.0
   label_smoothing: 0.0
   hrv_loss: smooth_l1
-  use_pos_weight: true   # ← TEST VARIABLE
-  use_focal: false       # ← TEST VARIABLE
+  use_pos_weight: false  # ← TEST VARIABLE
+  use_focal: true        # ← TEST VARIABLE
   focal_gamma: 2.0
   focal_alpha: 0.25
   max_pos_weight: 30.0

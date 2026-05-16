@@ -2,7 +2,7 @@
 # Baseline inherited: SPLIT-E02, NORM-E01, LOSS-E03
 #
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/aug_e03_noise_warp.yaml
+#   python scripts/02_train.py --config configs/experiments/ablation/
 # BRANCH: STAGE4-AUG
 
 paths:

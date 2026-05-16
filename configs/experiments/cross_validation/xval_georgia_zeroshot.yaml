@@ -1,4 +1,4 @@
-# configs/experiments/xval_georgia_zeroshot.yaml
+# configs/experiments/cross_validation/
 # Inherits from STAGE6-FINAL (Baseline Arch + Focal + GradIso)
 
 experiment_name: "xval_georgia_zeroshot"

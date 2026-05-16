@@ -1,17 +1,19 @@
-# SPLIT-E02: random_grouped by patient_id (seed=42)
-# Groups all records of a patient together before random 70/15/15 split.
-# Ensures no patient leakage across splits.
+# SPLIT-E01: PTB-XL native strat_fold (Baseline Split)
+# Identical to baseline.yaml — PTB-XL fold 10 = test, fold 9 = val
+# This is the community standard split used in most published papers.
 #
 # BUILD CMD:
-#   python scripts/01_build_metadata.py --config configs/experiments/split_e02_random_grouped.yaml --no-hrv
+#   python scripts/01_build_metadata.py --config configs/experiments/ablation/ --no-hrv
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/split_e02_random_grouped.yaml
-# BRANCH: SPLIT-E02
+#   python scripts/02_train.py --config configs/experiments/ablation/
+# BRANCH: SPLIT-E01
+
+_inherit: baseline  # conceptual only — manually copied from baseline.yaml
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_split_e02"
-  splits: "data/splits_split_e02"
+  processed: "data/processed_split_e01"
+  splits: "data/splits_split_e01"
   checkpoints: "checkpoints"
 
 dataset:
@@ -23,9 +25,11 @@ dataset:
     IMI: 80
   normal_label: NORM
   normal_mode: exclusive
-  split_method: random_grouped   # ← THIS IS THE VARIABLE BEING TESTED
-  split_group_key: patient_id
+  split_method: strat_fold   # ← THIS IS THE VARIABLE BEING TESTED
+  test_fold: 10
+  val_fold: 9
   split_seed: 42
+  split_group_key: patient_id
   split_train_ratio: 0.70
   split_val_ratio: 0.15
   split_test_ratio: 0.15
@@ -33,8 +37,6 @@ dataset:
   split_test_fold_index: 0
   split_val_fold_index: null
   split_stratify_label: null
-  test_fold: 10
-  val_fold: 9
 
 labels:
   - {name: NORM,  task: normal,     index: 0}

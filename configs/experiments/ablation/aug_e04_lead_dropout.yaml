@@ -1,14 +1,14 @@
-# NORM-E01: zscore normalization (Stage 1 winner config)
-# Base config inherited from SPLIT-E02 (random_grouped)
+# AUG-E04: Lead Dropout
+# Baseline inherited: SPLIT-E02, NORM-E01, LOSS-E03
 #
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/norm_e01_zscore.yaml
-# BRANCH: STAGE2-NORM
+#   python scripts/02_train.py --config configs/experiments/ablation/
+# BRANCH: STAGE4-AUG
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_split_e02" # Reusing SPLIT-E02 data since split method didn't change
-  splits: "data/splits_split_e02"       # Reusing SPLIT-E02 data
+  processed: "data/processed_split_e02" # Reusing data
+  splits: "data/splits_split_e02"
   checkpoints: "checkpoints"
 
 dataset:
@@ -20,7 +20,7 @@ dataset:
     IMI: 80
   normal_label: NORM
   normal_mode: exclusive
-  split_method: random_grouped   # Stage 1 Winner
+  split_method: random_grouped
   split_group_key: patient_id
   split_seed: 42
   split_train_ratio: 0.70
@@ -53,7 +53,7 @@ preprocessing:
   bandpass_low: 0.5
   bandpass_high: 40.0
   notch_freq: 50.0
-  normalize: zscore   # ← THIS IS THE VARIABLE BEING TESTED
+  normalize: zscore
 
 model:
   architecture: hybrid_transformer
@@ -67,11 +67,11 @@ model:
   head_hidden_dim: 128
   mi_branch_dim: 128
   dropout: 0.15
-  mi_gradient_scale: 1.0
+  mi_gradient_scale: 0.3
   hrv_detach: false
 
 augmentation:
-  aug_lead_dropout: false
+  aug_lead_dropout: true        # ← TEST VARIABLE
   aug_random_crop: false
   aug_baseline_wander: false
   aug_time_warp: false
@@ -96,7 +96,7 @@ training:
   label_smoothing: 0.0
   hrv_loss: smooth_l1
   use_pos_weight: false
-  use_focal: false
+  use_focal: true
   focal_gamma: 2.0
   focal_alpha: 0.25
   max_pos_weight: 30.0

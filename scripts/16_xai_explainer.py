@@ -20,7 +20,7 @@ Usage
 ------
     python scripts/16_xai_explainer.py \\
         --checkpoint checkpoints/run_20260515_232907_hybrid-tf-aug \\
-        --config    configs/experiments/dynth_e02_perclass.yaml \\
+        --config    configs/experiments/dynamic_threshold/dynth_e02_perclass.yaml \\
         --split     test \\
         --max-per-class 5
 """
@@ -558,7 +558,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", required=True,
                    help="Path to checkpoint directory (e.g. checkpoints/run_xxx).")
     p.add_argument("--config", required=True,
-                   help="Config YAML used to build the dataset (e.g. configs/experiments/dynth_e02_perclass.yaml).")
+                   help="Config YAML used to build the dataset (e.g. configs/experiments/dynamic_threshold/dynth_e02_perclass.yaml).")
     p.add_argument("--split", default="test", choices=["train", "val", "test"],
                    help="Which dataset split to run XAI on. Default: test.")
     p.add_argument("--max-per-class", type=int, default=5,

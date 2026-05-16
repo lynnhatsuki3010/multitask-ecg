@@ -1,14 +1,14 @@
-# ARCH-E03: Base CNN + Transformer + Lead Group (No Task Token)
-# Baseline Split (strat_fold), No Focal, No Weighted, No Augmentation.
+# FINAL-E01: Full 50-epoch run — Best Stack, Seed 42
+# Stack: random_grouped + zscore + BCE Loss + Noise+Warp + Uniform + Dynamic Threshold
 #
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/arch_e03_cnn_tf_leadgroup.yaml
-# BRANCH: THESIS-REVISION
+#   python scripts/02_train.py --config configs/experiments/final/
+# BRANCH: STAGE6-FINAL
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_split_e01"
-  splits: "data/splits_split_e01"
+  processed: "data/processed_split_e02"
+  splits: "data/splits_split_e02"
   checkpoints: "checkpoints"
 
 dataset:
@@ -20,11 +20,9 @@ dataset:
     IMI: 80
   normal_label: NORM
   normal_mode: exclusive
-  split_method: strat_fold
-  test_fold: 10
-  val_fold: 9
-  split_seed: 42
+  split_method: random_grouped
   split_group_key: patient_id
+  split_seed: 42
   split_train_ratio: 0.70
   split_val_ratio: 0.15
   split_test_ratio: 0.15
@@ -32,6 +30,8 @@ dataset:
   split_test_fold_index: 0
   split_val_fold_index: null
   split_stratify_label: null
+  test_fold: 10
+  val_fold: 9
 
 labels:
   - {name: NORM,  task: normal,     index: 0}
@@ -69,26 +69,26 @@ model:
   dropout: 0.15
   mi_gradient_scale: 1.0
   hrv_detach: false
-  use_lead_group: true
-  use_task_token: false
+  dynamic_threshold: true
+  dynth_loss_weight: 0.05
 
 augmentation:
   aug_lead_dropout: false
   aug_random_crop: false
-  aug_baseline_wander: false
-  aug_time_warp: false
+  aug_baseline_wander: true
+  aug_time_warp: true
   aug_mixup: false
   mixup_alpha: 0.2
 
 training:
   batch_size: 96
-  epochs: 15
+  epochs: 50                  # ← Full run
   freeze_backbone_at_epoch: -1
   lr: 1.0e-4
   weight_decay: 1.0e-3
   mi_lr_multiplier: 1.0
   scheduler: cosine
-  warmup_epochs: 2
+  warmup_epochs: 5            # ← More warmup for longer run
   loss_weights:
     arrhythmia: 1.0
     mi: 1.0
@@ -107,14 +107,14 @@ training:
   seed: 42
   num_workers: 0
   pin_memory: true
-  save_every: 5
-  early_stopping_patience: 15
+  save_every: 10
+  early_stopping_patience: 20  # ← More patience for longer run
   monitor_metric: imi_auprc
 
 eval:
   metrics: [auroc, auprc, f1, accuracy]
   threshold: 0.5
-  val_tune_thresholds_every: 0
+  val_tune_thresholds_every: 5  # ← Tune thresholds every 5 epochs
   threshold_search:
     min_threshold: 0.15
     min_pos_count: 20

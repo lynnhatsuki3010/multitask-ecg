@@ -1,13 +1,13 @@
-# SAMP-E01: Uniform Sampling (Baseline)
-# Baseline inherited: SPLIT-E02, NORM-E01, LOSS-E03, AUG-E03
+# FINAL-E03: Full 50-epoch run — Best Stack, Seed 2024 (Stability Check)
+# Stack: random_grouped + zscore + BCE Loss + Noise+Warp + Uniform + Dynamic Threshold
 #
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/samp_e01_uniform.yaml
-# BRANCH: STAGE5-SAMP
+#   python scripts/02_train.py --config configs/experiments/final/
+# BRANCH: STAGE6-FINAL
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_split_e02" # Reusing data
+  processed: "data/processed_split_e02"
   splits: "data/splits_split_e02"
   checkpoints: "checkpoints"
 
@@ -67,8 +67,10 @@ model:
   head_hidden_dim: 128
   mi_branch_dim: 128
   dropout: 0.15
-  mi_gradient_scale: 0.3
+  mi_gradient_scale: 1.0
   hrv_detach: false
+  dynamic_threshold: true
+  dynth_loss_weight: 0.05
 
 augmentation:
   aug_lead_dropout: false
@@ -80,13 +82,13 @@ augmentation:
 
 training:
   batch_size: 96
-  epochs: 15
+  epochs: 50
   freeze_backbone_at_epoch: -1
   lr: 1.0e-4
   weight_decay: 1.0e-3
   mi_lr_multiplier: 1.0
   scheduler: cosine
-  warmup_epochs: 2
+  warmup_epochs: 5
   loss_weights:
     arrhythmia: 1.0
     mi: 1.0
@@ -96,23 +98,23 @@ training:
   label_smoothing: 0.0
   hrv_loss: smooth_l1
   use_pos_weight: false
-  use_focal: true
+  use_focal: false
   focal_gamma: 2.0
   focal_alpha: 0.25
   max_pos_weight: 30.0
   pos_weight_power: 0.75
-  weighted_sampler: false  # ← TEST VARIABLE
-  seed: 42
+  weighted_sampler: false
+  seed: 2024              # ← Different seed
   num_workers: 0
   pin_memory: true
-  save_every: 5
-  early_stopping_patience: 15
+  save_every: 10
+  early_stopping_patience: 20
   monitor_metric: imi_auprc
 
 eval:
   metrics: [auroc, auprc, f1, accuracy]
   threshold: 0.5
-  val_tune_thresholds_every: 0
+  val_tune_thresholds_every: 5
   threshold_search:
     min_threshold: 0.15
     min_pos_count: 20

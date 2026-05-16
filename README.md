@@ -99,3 +99,21 @@ Input (B, 12, 1000)
 - `epoch_XXX.pth`    — periodic checkpoints
 - `history.json`     — training/val metrics per epoch
 - `test_metrics.json` — final test evaluation
+
+## Giải thích Mô hình (XAI - Explainable AI)
+
+Module XAI sử dụng attention weights từ Transformer Encoder để làm nổi bật (highlight) các vùng tín hiệu ECG mà mô hình tập trung vào khi đưa ra dự đoán các bệnh lý loạn nhịp và nhồi máu cơ tim.
+
+```bash
+# Tạo XAI heatmaps cho test set, phân loại rõ True Positives và False Positives
+python scripts/16_xai_explainer.py \
+    --checkpoint checkpoints/run_YYYYMMDD_HHMMSS \
+    --config configs/experiments/dynamic_threshold/dynth_e03_dynamic.yaml \
+    --split test \
+    --max-per-class 5 \
+    --max-total 50
+```
+
+Ảnh đầu ra sẽ được tự động lưu vào `artifacts/xai/` với cấu trúc thư mục rõ ràng:
+- `artifacts/xai/TP/{label}/`: Các ca bệnh dự đoán **ĐÚNG** (True Positives).
+- `artifacts/xai/FP/{label}/`: Các ca bệnh dự đoán **SAI** (False Positives).

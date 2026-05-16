@@ -78,7 +78,7 @@ class MultiTaskLoss(nn.Module):
 
 def main():
     checkpoint_path = "checkpoints/run_20260508_185741_hybrid-tf-focal-aug/best_model.pth"
-    config_path = "configs/experiments/xval_georgia_finetune.yaml"
+    config_path = "configs/experiments/cross_validation/xval_georgia_finetune.yaml"
     
     print(f"Loading config from {config_path}...")
     with open(config_path, "r") as f:

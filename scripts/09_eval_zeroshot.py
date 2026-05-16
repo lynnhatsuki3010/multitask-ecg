@@ -107,7 +107,7 @@ def print_metrics(y_true, y_score, label_names, group_name):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, help="Path to best_model.pth")
-    parser.add_argument("--config", default="configs/experiments/xval_georgia_zeroshot.yaml")
+    parser.add_argument("--config", default="configs/experiments/cross_validation/xval_georgia_zeroshot.yaml")
     args = parser.parse_args()
     # Instead of a hardcoded config, use the exact config snapshot saved with the checkpoint!
     ckpt_dir = os.path.dirname(args.checkpoint)

@@ -1,14 +1,17 @@
-# NORM-E02: robust normalization (median/IQR)
-# Base config inherited from SPLIT-E02 (random_grouped)
+# SPLIT-E03: stratified_group_kfold stratified on IMI label
+# Groups by patient_id AND ensures IMI positive cases are evenly distributed
+# across all 5 folds. Best protection against IMI being skewed in test set.
 #
+# BUILD CMD:
+#   python scripts/01_build_metadata.py --config configs/experiments/ablation/ --no-hrv
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/norm_e02_robust.yaml
-# BRANCH: STAGE2-NORM
+#   python scripts/02_train.py --config configs/experiments/ablation/
+# BRANCH: SPLIT-E03
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_split_e02" # Reusing SPLIT-E02 data
-  splits: "data/splits_split_e02"
+  processed: "data/processed_split_e03"
+  splits: "data/splits_split_e03"
   checkpoints: "checkpoints"
 
 dataset:
@@ -20,16 +23,16 @@ dataset:
     IMI: 80
   normal_label: NORM
   normal_mode: exclusive
-  split_method: random_grouped   # Stage 1 Winner
+  split_method: stratified_group_kfold  # ← THIS IS THE VARIABLE BEING TESTED
   split_group_key: patient_id
   split_seed: 42
+  split_num_folds: 5
+  split_test_fold_index: 0
+  split_val_fold_index: 1
+  split_stratify_label: IMI            # ← ensures IMI is balanced across folds
   split_train_ratio: 0.70
   split_val_ratio: 0.15
   split_test_ratio: 0.15
-  split_num_folds: 10
-  split_test_fold_index: 0
-  split_val_fold_index: null
-  split_stratify_label: null
   test_fold: 10
   val_fold: 9
 
@@ -53,7 +56,7 @@ preprocessing:
   bandpass_low: 0.5
   bandpass_high: 40.0
   notch_freq: 50.0
-  normalize: robust   # ← THIS IS THE VARIABLE BEING TESTED
+  normalize: zscore
 
 model:
   architecture: hybrid_transformer

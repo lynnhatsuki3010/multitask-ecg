@@ -69,7 +69,7 @@ model:
   dropout: 0.15
   mi_gradient_scale: 1.0
   hrv_detach: false
-  dynamic_threshold: true
+  use_dynamic_threshold: false
   dynth_loss_weight: 0.05
 
 augmentation:
@@ -115,6 +115,7 @@ eval:
   metrics: [auroc, auprc, f1, accuracy]
   threshold: 0.5
   val_tune_thresholds_every: 5  # ← Tune thresholds every 5 epochs
+  use_dynamic_threshold_inference: false
   threshold_search:
     min_threshold: 0.15
     min_pos_count: 20

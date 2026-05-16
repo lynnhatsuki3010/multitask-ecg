@@ -325,7 +325,9 @@ def generate_xai(
     fs = ckpt_cfg["dataset"]["sampling_rate"]
     print(f"[XAI] {split} set: {len(dataset)} samples")
 
-    model = build_model(ckpt_cfg, len(arrhy_labels), len(mi_labels))
+    hrv_enabled     = ckpt_cfg.get("hrv", {}).get("enabled", False)
+    num_hrv_targets = len(ckpt_cfg.get("hrv", {}).get("features", ["rmssd", "sdnn", "mean_hr"])) if hrv_enabled else 3
+    model = build_model(ckpt_cfg, len(arrhy_labels), len(mi_labels), num_hrv_targets)
     best_ckpt = ckpt_dir / "best_model.pt"
     state = torch.load(best_ckpt, map_location="cpu")
     model.load_state_dict(state, strict=False)

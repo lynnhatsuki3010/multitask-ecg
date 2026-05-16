@@ -341,16 +341,7 @@ def generate_xai(
         thresholds = {lbl: 0.5 for lbl in all_labels}
         print("[XAI] Using fixed threshold 0.5 for all classes.")
 
-    # ── 4. Build dataset ─────────────────────────────────────────────────────
-    processed_dir = Path(cfg["paths"]["processed"])
-    splits_dir    = Path(cfg["paths"]["splits"])
-    dataset = ECGDataset(
-        processed_dir=processed_dir,
-        splits_dir=splits_dir,
-        split=split,
-        config=cfg,
-    )
-    print(f"[XAI] Loaded {split} set: {len(dataset)} samples")
+
 
     # ── 5. Per-class counter to limit output ─────────────────────────────────
     combo_count: dict[str, int] = {}

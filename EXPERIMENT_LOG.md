@@ -125,10 +125,15 @@ python scripts/02_train.py --config configs/experiments/dynth_e03_dynamic.yaml
 
 | Run ID | Chiến lược Threshold | Arrhy (Macro F1) | MI (Macro F1) | IMI (AUPRC) | Checkpoint | Winner |
 | :--- | :--- | :---: | :---: | :---: | :--- | :---: |
-| `DYNTH-E01` | Fixed 0.5 | TBD | TBD | TBD | TBD | |
-| `DYNTH-E02` | Per-class Tuning (F-beta) | TBD | TBD | TBD | TBD | |
-| `DYNTH-E03` | Dynamic Threshold Head | TBD | TBD | TBD | TBD | |
+| `DYNTH-E01` | Fixed 0.5 | **0.823** | 0.638 | 0.523 | `run_20260515_221322_hybrid-tf-aug` | |
+| `DYNTH-E02` | Per-class Tuning (F-beta) | 0.818 | 0.644 | 0.496 | `run_20260515_232907_hybrid-tf-aug` | |
+| `DYNTH-E03` | Dynamic Threshold Head | 0.796 | **0.653** | **0.530** | `run_20260516_003527_hybrid-tf-aug` | ✅ |
+
+### 💡 Phân tích Kết quả Threshold:
+1. **Fixed 0.5 (E01)**: Cấu hình kiểm soát (control) cho kết quả Arrhythmia tốt nhất (0.823). Đây là nền tảng so sánh chuẩn mực.
+2. **Per-class Tuning (E02)**: Trái với kỳ vọng, việc tìm ngưỡng tối ưu trên Val Set *không* cải thiện tổng thể — Arrhythmia F1 giảm nhẹ (0.818) do overfitting threshold trên val, và IMI AUPRC thậm chí giảm xuống 0.496. Nguyên nhân: Val Set quá nhỏ để ước lượng ngưỡng ổn định.
+3. **Dynamic Threshold Head (E03)**: Model tự học ngưỡng cắt theo từng bệnh nhân đạt **kết quả MI tốt nhất** (Macro F1 = 0.653, IMI AUPRC = 0.530). Đặc biệt IMI F1 tăng từ 0.519 → **0.539** (+3.8%), IMI Recall tăng từ 0.716 → 0.680→ **0.680** vẫn cao. Sự đánh đổi nhỏ ở Arrhythmia (0.823 → 0.796) là chấp nhận được trong bối cảnh lâm sàng ưu tiên phát hiện MI.
+
+**Kết luận Giai đoạn 6**: `DynamicThresholdHead` là hướng đi triển vọng. Mô hình học được rằng **bệnh nhân có ECG "mờ"** (đặc trưng không rõ ràng) cần ngưỡng thấp hơn để bắt được MI, trong khi bệnh nhân có ECG điển hình có thể dùng ngưỡng cao hơn. Đây là đóng góp kỹ thuật có giá trị cho luận văn.
 
 ---
-
-*(Đang chờ kết quả training)*

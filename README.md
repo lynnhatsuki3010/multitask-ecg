@@ -70,15 +70,38 @@ python scripts/02_train.py --config configs/experiments/final/final_e01_seed42.y
 ## Model Architecture
 
 ```
-Input (B, 12, 1000)
-  → PatchEmbedding (patch_size=25 → 40 patches × 12 leads)
-  → Linear projection (300 → d_model=128)
-  → [CLS] token + Positional Encoding
-  → TransformerEncoder (4 layers, 4 heads, Pre-LN)
-  → CLS token (B, 128)
-      ├── Arrhythmia Head → (B, 5) logits
-      ├── MI Head         → (B, 2) logits
-      └── HRV Head        → (B, 3) [rmssd, sdnn, mean_hr]
+Input (B, 12, 5000)   ← 12-lead ECG, 10 seconds @ 500 Hz
+  │
+  ├── [Shared CNN Backbone]
+  │     → Stem Conv1d  (12 → 96,  downsample ×5)
+  │     → ResidualConv (96 → 128, downsample ×2)
+  │     → ResidualConv (128 → 192)
+  │     → ResidualConv (192 → 256, downsample ×2)
+  │     → Project      (256 → d_model=256)
+  │     → Sequence tokens (B, 250, 256)   [5000 / 20 = 250 tokens]
+  │
+  ├── [Transformer Encoder]
+  │     → 4 layers, 8 heads, FFN dim=512 (Pre-LN)
+  │     → AttentionPooling → global_features (B, 256)
+  │
+  ├── [Arrhythmia Branch]
+  │     → TaskTokenPooling over sequence → (B, 256)
+  │     → Concat [global + task-pooled]  → (B, 512)
+  │     → MLPHead (512 → 128 → 5)
+  │     → Logits: NORM, AFIB, STACH, PVC, AFLT
+  │
+  └── [MI Branch]  ← anatomy-aware, gradient-isolated
+        │
+        ├── Shared context  (B, 256)  [gradient scale = 1.0]
+        ├── TaskTokenPooling (IMI)  → (B, 256)
+        ├── TaskTokenPooling (ASMI) → (B, 256)
+        │
+        ├── LeadGroupEncoder — Inferior  [II, III, aVF]  → (B, 128)
+        ├── LeadGroupEncoder — Reciprocal [I, aVL]       → (B, 64)
+        └── LeadGroupEncoder — Anterior  [V1–V4]         → (B, 128)
+              │
+              ├── IMI Head:  Concat [shared + task + inferior + reciprocal] → MLPHead → (B, 1)
+              └── ASMI Head: Concat [shared + task + anterior]              → MLPHead → (B, 1)
 ```
 
 ## Outputs (checkpoints/)

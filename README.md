@@ -87,9 +87,29 @@ Input (B, 12, 1000)
 - `history.json`: Epoch-wise training and validation metrics.
 - `test_metrics.json`: Final evaluation results.
 
+## Evaluation Results
+
+The table below presents the detailed performance of our best configuration (Seed 123, run_20260516_145231_hybrid-tf-aug) on the Test Set, including per-class metrics and macro averages for each group:
+
+| Task / Group | Class / Subgroup | F1-Score | Precision | Recall | AUROC | AUPRC |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Arrhythmia** | NORM | 0.862 | 0.829 | 0.898 | 0.956 | 0.918 |
+| | AFIB | 0.872 | 0.872 | 0.872 | 0.992 | 0.889 |
+| | STACH | 0.847 | 0.829 | 0.866 | 0.993 | 0.847 |
+| | PVC | 0.859 | 0.771 | 0.969 | 0.981 | 0.858 |
+| | AFLT | 0.692 | 0.692 | 0.692 | 0.978 | 0.716 |
+| | **Arrhythmia Average (Macro)** | **0.826** | **0.798** | **0.859** | **0.980** | **0.846** |
+| **Myocardial Infarction (MI)** | IMI | 0.553 | 0.438 | 0.751 | 0.951 | 0.533 |
+| | ASMI | 0.759 | 0.754 | 0.763 | 0.977 | 0.855 |
+| | **MI Average (Macro)** | **0.656** | **0.596** | **0.757** | **0.964** | **0.694** |
+
 ## Explainable AI (XAI)
 
 The XAI module extracts attention weights from the Transformer Encoder to generate heatmaps, highlighting the specific ECG segments the model focuses on for its predictions.
+
+Example of an attention heatmap generated for an Inferior Myocardial Infarction detection case (True Positive):
+
+<img src="artifacts/xai/TP/IMI/pat11121.0_ecg139_pred[IMI]_gt[IMI]_IMI0.69_map.png" alt="XAI Heatmap Example" width="800">
 
 ```bash
 # Generate XAI heatmaps for the test set, segregated by TP/FP

@@ -109,7 +109,7 @@ The XAI module extracts attention weights from the Transformer Encoder to genera
 
 Example of an attention heatmap generated for an Inferior Myocardial Infarction detection case (True Positive):
 
-<img src="artifacts/xai/TP/IMI/pat11121.0_ecg139_pred[IMI]_gt[IMI]_IMI0.69_map.png" alt="XAI Heatmap Example" width="800">
+<img src="assets/xai_heatmap_example.png" alt="XAI Heatmap Example" width="800">
 
 ```bash
 # Generate XAI heatmaps for the test set, segregated by TP/FP

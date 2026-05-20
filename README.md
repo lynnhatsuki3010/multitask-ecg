@@ -107,7 +107,7 @@ The table below presents the detailed performance of our best configuration (See
 
 The XAI module extracts attention weights from the Transformer Encoder to generate heatmaps, highlighting the specific ECG segments the model focuses on for its predictions.
 
-Example of an attention heatmap generated for an Inferior Myocardial Infarction detection case (True Positive):
+Example of an attention heatmap generated for an Atrial Fibrillation (AFIB) detection case (True Positive):
 
 <img src="assets/xai_heatmap_example.png" alt="XAI Heatmap Example" width="800">
 

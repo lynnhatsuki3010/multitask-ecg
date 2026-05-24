@@ -280,6 +280,38 @@ class CNNBackbone(nn.Module):
         }
 
 
+class MultiScaleTemporalBranch(nn.Module):
+    """Multi-scale temporal processing to capture both high-frequency (QRS) and low-frequency (QT, T-wave) features."""
+    def __init__(self, in_channels: int, out_channels: int, dropout: float = 0.1):
+        super().__init__()
+        # Short scale: kernel 3, 5
+        self.short_scale = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels // 2, kernel_size=3, padding=1),
+            nn.BatchNorm1d(out_channels // 2),
+            nn.GELU(),
+            nn.Conv1d(out_channels // 2, out_channels // 2, kernel_size=5, padding=2),
+            nn.BatchNorm1d(out_channels // 2),
+            nn.GELU()
+        )
+        # Long scale: kernel 15
+        self.long_scale = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels // 2, kernel_size=15, padding=7),
+            nn.BatchNorm1d(out_channels // 2),
+            nn.GELU()
+        )
+        self.proj = nn.Sequential(
+            nn.Conv1d(out_channels, out_channels, kernel_size=1),
+            nn.BatchNorm1d(out_channels),
+            nn.GELU(),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        short = self.short_scale(x)
+        long = self.long_scale(x)
+        return self.proj(torch.cat([short, long], dim=1))
+
+
 class HybridTransformerBackbone(nn.Module):
     """CNN tokenizer followed by a lightweight Transformer encoder."""
 
@@ -295,6 +327,7 @@ class HybridTransformerBackbone(nn.Module):
         dim_feedforward: int = 512,
         dropout: float = 0.1,
         use_se: bool = False,
+        use_multi_scale: bool = False,
     ) -> None:
         super().__init__()
         self.output_dim = d_model
@@ -307,7 +340,12 @@ class HybridTransformerBackbone(nn.Module):
             dropout=dropout,
             use_se=use_se,
         )
-        self.sequence_proj = nn.Conv1d(stage_dims[-1], d_model, kernel_size=1, bias=False)
+        self.use_multi_scale = use_multi_scale
+        if use_multi_scale:
+            self.multi_scale = MultiScaleTemporalBranch(stage_dims[-1], d_model, dropout=dropout)
+            self.sequence_proj = nn.Identity()
+        else:
+            self.sequence_proj = nn.Conv1d(stage_dims[-1], d_model, kernel_size=1, bias=False)
         self.pre_transformer_norm = nn.LayerNorm(d_model)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         nn.init.trunc_normal_(self.cls_token, std=0.02)
@@ -335,7 +373,12 @@ class HybridTransformerBackbone(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         conv_features = self.front_end(x)
-        seq = self.sequence_proj(conv_features).transpose(1, 2)
+        if self.use_multi_scale:
+            seq = self.multi_scale(conv_features)
+            seq = self.sequence_proj(seq).transpose(1, 2)
+        else:
+            seq = self.sequence_proj(conv_features).transpose(1, 2)
+            
         seq = self.pre_transformer_norm(seq)
         batch_size = seq.size(0)
         cls = self.cls_token.expand(batch_size, -1, -1)

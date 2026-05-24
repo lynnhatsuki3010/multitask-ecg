@@ -67,11 +67,14 @@ class LeadGroupEncoder(nn.Module):
             nn.Dropout(dropout),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_sequence: bool = False):
         h = self.net(x)
         avg = self.avg_pool(h).squeeze(-1)
         mx = self.max_pool(h).squeeze(-1)
-        return self.proj(torch.cat([avg, mx], dim=-1))
+        pooled = self.proj(torch.cat([avg, mx], dim=-1))
+        if return_sequence:
+            return pooled, h
+        return pooled
 
 
 class MIHead(nn.Module):
@@ -87,21 +90,39 @@ class MIHead(nn.Module):
     RECIPROCAL_LEADS = [0, 4]       # I, aVL
     ANTERIOR_LEADS = [6, 7, 8, 9]   # V1, V2, V3, V4
 
-    def __init__(self, shared_dim: int, branch_dim: int, dropout: float) -> None:
+    def __init__(self, shared_dim: int, branch_dim: int, dropout: float, use_cross_attention: bool = False) -> None:
         super().__init__()
+        self.use_cross_attention = use_cross_attention
         self.imi_token_pool = TaskTokenPooling(shared_dim, dropout)
         self.asmi_token_pool = TaskTokenPooling(shared_dim, dropout)
+        
         self.inferior_encoder = LeadGroupEncoder(len(self.INFERIOR_LEADS), branch_dim, dropout)
         self.reciprocal_encoder = LeadGroupEncoder(len(self.RECIPROCAL_LEADS), branch_dim // 2, dropout)
         self.anterior_encoder = LeadGroupEncoder(len(self.ANTERIOR_LEADS), branch_dim, dropout)
+        
+        if use_cross_attention:
+            self.cross_attn_inferior = nn.MultiheadAttention(embed_dim=shared_dim, num_heads=4, batch_first=True, dropout=dropout)
+            self.cross_attn_reciprocal = nn.MultiheadAttention(embed_dim=shared_dim, num_heads=4, batch_first=True, dropout=dropout)
+            self.cross_attn_anterior = nn.MultiheadAttention(embed_dim=shared_dim, num_heads=4, batch_first=True, dropout=dropout)
+            
+            self.proj_k_inf = nn.Conv1d(branch_dim, shared_dim, kernel_size=1)
+            self.proj_k_rec = nn.Conv1d(branch_dim // 2, shared_dim, kernel_size=1)
+            self.proj_k_ant = nn.Conv1d(branch_dim, shared_dim, kernel_size=1)
+            
+            imi_in_dim = shared_dim * 2 + shared_dim + shared_dim
+            asmi_in_dim = shared_dim * 2 + shared_dim
+        else:
+            imi_in_dim = shared_dim * 2 + branch_dim + branch_dim // 2
+            asmi_in_dim = shared_dim * 2 + branch_dim
+
         self.imi_head = MLPHead(
-            shared_dim * 2 + branch_dim + branch_dim // 2,
+            imi_in_dim,
             1,
             hidden_dim=branch_dim,
             dropout=dropout,
         )
         self.asmi_head = MLPHead(
-            shared_dim * 2 + branch_dim,
+            asmi_in_dim,
             1,
             hidden_dim=branch_dim,
             dropout=dropout,
@@ -115,9 +136,29 @@ class MIHead(nn.Module):
     ) -> torch.Tensor:
         imi_tokens = self.imi_token_pool(sequence_features)
         asmi_tokens = self.asmi_token_pool(sequence_features)
-        inferior = self.inferior_encoder(signal[:, self.INFERIOR_LEADS, :])
-        reciprocal = self.reciprocal_encoder(signal[:, self.RECIPROCAL_LEADS, :])
-        anterior = self.anterior_encoder(signal[:, self.ANTERIOR_LEADS, :])
+        
+        if self.use_cross_attention:
+            _, inf_seq = self.inferior_encoder(signal[:, self.INFERIOR_LEADS, :], return_sequence=True)
+            _, rec_seq = self.reciprocal_encoder(signal[:, self.RECIPROCAL_LEADS, :], return_sequence=True)
+            _, ant_seq = self.anterior_encoder(signal[:, self.ANTERIOR_LEADS, :], return_sequence=True)
+            
+            inf_seq = self.proj_k_inf(inf_seq).transpose(1, 2)
+            rec_seq = self.proj_k_rec(rec_seq).transpose(1, 2)
+            ant_seq = self.proj_k_ant(ant_seq).transpose(1, 2)
+            
+            q = shared_features.unsqueeze(1)
+            inf_attn, _ = self.cross_attn_inferior(q, inf_seq, inf_seq)
+            rec_attn, _ = self.cross_attn_reciprocal(q, rec_seq, rec_seq)
+            ant_attn, _ = self.cross_attn_anterior(q, ant_seq, ant_seq)
+            
+            inferior = inf_attn.squeeze(1)
+            reciprocal = rec_attn.squeeze(1)
+            anterior = ant_attn.squeeze(1)
+        else:
+            inferior = self.inferior_encoder(signal[:, self.INFERIOR_LEADS, :])
+            reciprocal = self.reciprocal_encoder(signal[:, self.RECIPROCAL_LEADS, :])
+            anterior = self.anterior_encoder(signal[:, self.ANTERIOR_LEADS, :])
+            
         imi = self.imi_head(torch.cat([shared_features, imi_tokens, inferior, reciprocal], dim=-1))
         asmi = self.asmi_head(torch.cat([shared_features, asmi_tokens, anterior], dim=-1))
         return torch.cat([imi, asmi], dim=-1)
@@ -148,6 +189,7 @@ class ECGMultiTaskModel(nn.Module):
         dropout: float,
         hrv_detach: bool = False,
         mi_gradient_scale: float = 1.0,
+        use_cross_attention: bool = False,
     ) -> None:
         super().__init__()
         if num_mi_labels != 2:
@@ -159,15 +201,16 @@ class ECGMultiTaskModel(nn.Module):
         self.mi_gradient_scale = mi_gradient_scale
         shared_dim = backbone.output_dim
 
+        self.sequence_pool = AttentionPooling(shared_dim)
         self.arrhythmia_pool = TaskTokenPooling(shared_dim, dropout)
+
         self.arrhythmia_head = MLPHead(
             shared_dim * 2,
             num_arrhythmia_labels,
             hidden_dim=head_hidden_dim,
             dropout=dropout,
         )
-        self.mi_head = MIHead(shared_dim=shared_dim, branch_dim=mi_branch_dim, dropout=dropout)
-        self.sequence_pool = AttentionPooling(shared_dim)
+        self.mi_head = MIHead(shared_dim=shared_dim, branch_dim=mi_branch_dim, dropout=dropout, use_cross_attention=use_cross_attention)
 
         if hrv_enabled:
             self.hrv_head = MLPHead(

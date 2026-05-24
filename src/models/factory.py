@@ -28,6 +28,8 @@ def build_model(
     stem_dim = int(model_cfg.get("stem_dim", max(64, d_model // 3)))
     dropout = float(model_cfg.get("dropout", 0.15))
     use_se = bool(model_cfg.get("use_se", False))
+    use_multi_scale = bool(model_cfg.get("use_multi_scale", False))
+    use_cross_attention = bool(model_cfg.get("use_cross_attention", False))
     downsample_factor = int(model_cfg.get("downsample_factor", model_cfg.get("patch_size", 20)))
 
     if architecture == "cnn":
@@ -52,6 +54,7 @@ def build_model(
             dim_feedforward=int(model_cfg.get("dim_feedforward", d_model * 2)),
             dropout=dropout,
             use_se=use_se,
+            use_multi_scale=use_multi_scale,
         )
     else:
         raise ValueError(
@@ -75,4 +78,5 @@ def build_model(
         dropout=dropout,
         hrv_detach=bool(model_cfg.get("hrv_detach", False)),
         mi_gradient_scale=mi_gradient_scale,
+        use_cross_attention=use_cross_attention,
     )

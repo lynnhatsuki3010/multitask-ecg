@@ -73,64 +73,113 @@ graph TD
 *   **Pipeline Order**: `Split (strat_fold) -> Norm -> Aug -> Samp -> Loss`
 *   **Length**: Each ablation step trained for **15 epochs** only. The winning variant carries forward.
 
+---
+
 ### Stage 1: Split Strategy & Backbone Setup
-*   **Goal**: Establish baseline performance using the native `strat_fold` split and standard Z-Score normalization.
+*   **Goal**: Establish baseline performance using the native `strat_fold` split and standard Z-Score normalization on `ARCH-5`.
 *   **Command**:
     ```bash
     python scripts/02_train.py --config configs/experiments/arch_e05_clinical_attention.yaml
     ```
 *   **Results**:
-    *   Arrhythmia Macro F1: `0.7500`
-    *   MI Macro F1: `0.5710`
-    *   IMI AUPRC: `0.4400`
+    *   Arrhythmia Macro F1: `0.7495`
+    *   MI Macro F1: `0.5712`
+    *   IMI AUPRC: `0.4404`
     *   Folder: `run_20260524_124750_hybrid-tf`
 
+---
+
 ### Stage 2: Normalization (Norm)
-*   **Goal**: Evaluate `Robust` (Median/IQR) scaling against standard `Z-Score` normalization.
-*   **Command**:
+*   **Goal**: Compare `Robust` (Median/IQR) scaling against baseline `Z-Score` and `MinMax` normalizations.
+*   **Commands**:
     ```bash
+    # Robust Norm (Winner)
     python scripts/02_train.py --config configs/experiments/norm_e02_robust.yaml
+    # MinMax Norm
+    python scripts/02_train.py --config configs/experiments/norm_e03_minmax.yaml
     ```
-*   **Results**:
-    *   Arrhythmia Macro F1: `0.7569`
-    *   MI Macro F1: `0.6059`
-    *   IMI AUPRC: `0.4146`
-    *   Folder: `run_20260524_204002_hybrid-tf`
-    *   **Verdict**: **Robust Norm wins** due to a +3.49% absolute F1 boost on the MI task, maintaining robust lead voltage proportions under artifacts.
+
+#### Comparative Evaluation:
+| Normalization Method | Arrhy Macro F1 | MI Macro F1 | IMI AUPRC | Checkpoint Directory | Winner? |
+| :--- | :---: | :---: | :---: | :--- | :---: |
+| Z-Score (Stage 1 Baseline) | 0.7495 | 0.5712 | **0.4404** | `run_20260524_124750_hybrid-tf` | |
+| **Robust (Median/IQR)** | 0.7569 | **0.6059** | 0.4146 | `run_20260524_204002_hybrid-tf` | ✅ |
+| MinMax | **0.7630** | 0.5674 | 0.4184 | `run_20260524_231706_hybrid-tf` | |
+
+*   **Verdict**: **Robust Norm wins**. It registers a major **+3.47%** absolute F1 increase on the clinical MI task by maintaining relative lead voltage morphology under high-amplitude chest-lead artifacts.
+
+---
 
 ### Stage 3: Data Augmentation (Aug)
-*   **Goal**: Introduce spatial regularization via `Lead Dropout` (randomly masking 1-2 leads).
-*   **Command**:
+*   **Goal**: Introduce spatial regularization via `Lead Dropout` and temporal perturbations (`MixUp`, `Random Crop`, `Noise+Warp`).
+*   **Commands**:
     ```bash
+    # Lead Dropout (Winner)
     python scripts/02_train.py --config configs/experiments/aug_e04_lead_dropout.yaml
+    # Mixup
+    python scripts/02_train.py --config configs/experiments/aug_e01_mixup.yaml
+    # Random Crop
+    python scripts/02_train.py --config configs/experiments/aug_e02_random_crop.yaml
+    # Noise + Warp
+    python scripts/02_train.py --config configs/experiments/aug_e03_noise_warp.yaml
     ```
-*   **Results**:
-    *   Arrhythmia Macro F1: `0.7785`
-    *   MI Macro F1: `0.6156`
-    *   IMI AUPRC: `0.4929`
-    *   Folder: `run_20260525_184600_hybrid-tf-aug`
-    *   **Verdict**: **Lead Dropout wins** (+2.16% absolute Arrhy F1 boost, and +7.83% absolute IMI AUPRC boost). It forces lead-redundant spatial representations.
+
+#### Comparative Evaluation (Inherited Robust Norm):
+| Augmentation Strategy | Arrhy Macro F1 | MI Macro F1 | IMI AUPRC | Checkpoint Directory | Winner? |
+| :--- | :---: | :---: | :---: | :--- | :---: |
+| None (Stage 2 Winner) | 0.7569 | 0.6059 | 0.4146 | `run_20260524_204002_hybrid-tf` | |
+| **Lead Dropout (1-2 leads)** | **0.7785** | 0.6156 | **0.4929** | `run_20260525_184600_hybrid-tf-aug` | ✅ |
+| MixUp ($\alpha=0.2$) | 0.7589 | 0.6141 | 0.4489 | `run_20260525_085139_hybrid-tf-aug-mxp` | |
+| Random Crop (80% window) | 0.5646 | 0.5619 | 0.4590 | `run_20260525_122148_hybrid-tf-aug` | |
+| Noise + Warp (physiological) | 0.7706 | **0.6185** | 0.4892 | `run_20260525_153747_hybrid-tf-aug` | |
+
+*   **Verdict**: **Lead Dropout wins**. Zeroing out random leads forced the network to learn redundant spatial morphology rather than overfitting to specific "hero" leads, pushing IMI AUPRC up by **+7.83%** absolutely. Random Crop severely collapsed rhythm classification by scaling interval spacing out of physiological limits.
+
+---
 
 ### Stage 4: Batch Sampling (Samp)
-*   **Goal**: Evaluate `Uniform` sampling against `Weighted Random Sampler` (WRS) under Lead Dropout + Robust Norm.
-*   **Command**:
+*   **Goal**: Compare a standard `Uniform` batch distribution against `Weighted Random Sampler` (WRS) to mitigate class imbalance.
+*   **Commands**:
     ```bash
+    # Uniform Sampler (Winner)
     python scripts/02_train.py --config configs/experiments/samp_e01_uniform.yaml
+    # Weighted Random Sampler (WRS)
+    python scripts/02_train.py --config configs/experiments/samp_e02_weighted.yaml
     ```
-*   **Results**:
-    *   Arrhythmia Macro F1: `0.7823`
-    *   MI Macro F1: `0.6095`
-    *   IMI AUPRC: `0.4915`
-    *   Folder: `run_20260525_222856_hybrid-tf-aug`
-    *   **Verdict**: **Uniform Sampler wins** (This becomes the final *Golden Pipeline Stack*). WRS collapsed Arrhythmia representations because it oversampled rare leads, reducing batch diversity.
+
+#### Comparative Evaluation (Inherited Lead Dropout + Robust Norm):
+| Batch Sampling Method | Arrhy Macro F1 | MI Macro F1 | IMI AUPRC | Checkpoint Directory | Winner? |
+| :--- | :---: | :---: | :---: | :--- | :---: |
+| **Uniform Sampler** | **0.7823** | **0.6095** | 0.4915 | `run_20260525_222856_hybrid-tf-aug` | ✅ |
+| Weighted Sampler (WRS) | 0.7373 | 0.6080 | **0.4956** | `run_20260526_004039_hybrid-tf-wrs-aug` | |
+
+*   **Verdict**: **Uniform Sampler wins**. This is our finalized *Golden Pipeline Stack*. WRS collapsed Arrhythmia representations (F1 fell from 0.7823 to 0.7373) due to a drastic drop in batch negative diversity when force-sampling rare channels.
+
+---
 
 ### Stage 5: Loss Function (Loss)
-*   **Goal**: Evaluate class-balancing losses (`pos_weight`, Focal Loss, ASL).
-*   **Command**:
+*   **Goal**: Evaluate class-balancing loss variants (`pos_weight`, Focal Loss, Asymmetric Loss) against standard BCE loss.
+*   **Commands**:
     ```bash
+    # Standard BCE Loss (Winner - stage 4 golden baseline)
+    python scripts/02_train.py --config configs/experiments/samp_e01_uniform.yaml
+    # positive weight scaling
     python scripts/02_train.py --config configs/experiments/loss_e01_posweight.yaml
+    # Focal Loss (gamma=2, alpha=0.25)
+    python scripts/02_train.py --config configs/experiments/loss_e02_focal.yaml
+    # Asymmetric Loss (ASL)
+    python scripts/02_train.py --config configs/experiments/loss_e04_asl.yaml
     ```
-*   **Results**: **Standard BCE wins**. Advanced class-balancing losses (Focal, ASL) degraded validation performance under `strat_fold` (NLL became unstable within 15 epochs). Standard BCE remains in the Golden Stack.
+
+#### Comparative Evaluation (Inherited Lead Dropout + Robust Norm + Uniform):
+| Loss Function Configuration | Arrhy Macro F1 | MI Macro F1 | IMI AUPRC | Checkpoint Directory | Winner? |
+| :--- | :---: | :---: | :---: | :--- | :---: |
+| **Standard BCE Loss** | **0.7823** | **0.6095** | **0.4915** | `run_20260525_222856_hybrid-tf-aug` | ✅ |
+| positive weights (`pos_weight` ratio) | 0.6421 | 0.5503 | 0.4200 | `run_20260526_111523_hybrid-tf-aug` | |
+| Focal Loss ($\gamma=2.0$, $\alpha=0.25$) | 0.7406 | 0.6054 | 0.4035 | `run_20260526_140153_hybrid-tf-focal-aug` | |
+| Asymmetric Loss (ASL) | 0.7608 | 0.5922 | 0.4164 | `run_20260526_171333_hybrid-tf-focal-aug` | |
+
+*   **Verdict**: **Standard BCE wins**. Advanced class-balancing loss functions dynamically scale gradients based on predicted confidence. Under a rigorous native split, these adjustments destabilized gradient optimization during the 15-epoch exploration limits. Standard BCE remains the most robust representation loss for our finalized multi-task Golden Stack.
 
 ---
 

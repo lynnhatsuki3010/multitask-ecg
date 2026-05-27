@@ -1,14 +1,14 @@
 # FINAL-E03: Full 50-epoch run — Best Stack, Seed 2024 (Stability Check)
-# Stack: random_grouped + zscore + Focal Loss + GradIso(0.3) + Noise+Warp + Uniform
+# Stack: strat_fold + robust + BCE Loss + Lead Dropout + Uniform
 #
 # TRAIN CMD:
 #   python scripts/02_train.py --config configs/experiments/final_e03_seed2024.yaml
-# BRANCH: STAGE6-FINAL
+# BRANCH: TEST-ARCH-ABLATION
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_split_e02"
-  splits: "data/splits_split_e02"
+  processed: "data/processed_baseline"
+  splits: "data/splits_baseline"
   checkpoints: "checkpoints"
 
 dataset:
@@ -20,16 +20,7 @@ dataset:
     IMI: 80
   normal_label: NORM
   normal_mode: exclusive
-  split_method: random_grouped
-  split_group_key: patient_id
-  split_seed: 42
-  split_train_ratio: 0.70
-  split_val_ratio: 0.15
-  split_test_ratio: 0.15
-  split_num_folds: 10
-  split_test_fold_index: 0
-  split_val_fold_index: null
-  split_stratify_label: null
+  split_method: strat_fold
   test_fold: 10
   val_fold: 9
 
@@ -53,7 +44,7 @@ preprocessing:
   bandpass_low: 0.5
   bandpass_high: 40.0
   notch_freq: 50.0
-  normalize: zscore
+  normalize: robust
 
 model:
   architecture: hybrid_transformer
@@ -67,14 +58,16 @@ model:
   head_hidden_dim: 128
   mi_branch_dim: 128
   dropout: 0.15
-  mi_gradient_scale: 0.3
+  mi_gradient_scale: 1.0
   hrv_detach: false
+  use_multi_scale: true
+  use_cross_attention: true
 
 augmentation:
-  aug_lead_dropout: false
+  aug_lead_dropout: true
   aug_random_crop: false
-  aug_baseline_wander: true
-  aug_time_warp: true
+  aug_baseline_wander: false
+  aug_time_warp: false
   aug_mixup: false
   mixup_alpha: 0.2
 
@@ -96,23 +89,23 @@ training:
   label_smoothing: 0.0
   hrv_loss: smooth_l1
   use_pos_weight: false
-  use_focal: true
+  use_focal: false
   focal_gamma: 2.0
   focal_alpha: 0.25
   max_pos_weight: 30.0
   pos_weight_power: 0.75
   weighted_sampler: false
-  seed: 2024              # ← Different seed
+  seed: 2024
   num_workers: 0
   pin_memory: true
   save_every: 10
-  early_stopping_patience: 20
+  early_stopping_patience: 15
   monitor_metric: imi_auprc
 
 eval:
   metrics: [auroc, auprc, f1, accuracy]
   threshold: 0.5
-  val_tune_thresholds_every: 5
+  val_tune_thresholds_every: 0
   threshold_search:
     min_threshold: 0.15
     min_pos_count: 20

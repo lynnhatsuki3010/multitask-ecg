@@ -58,17 +58,17 @@ model:
   head_hidden_dim: 128
   mi_branch_dim: 128
   dropout: 0.15
-  mi_gradient_scale: 1.0
+  mi_gradient_scale: 0.05
   hrv_detach: false
   use_multi_scale: true
   use_cross_attention: true
 
 augmentation:
-  aug_lead_dropout: false
+  aug_lead_dropout: true
   aug_random_crop: false
   aug_baseline_wander: false
   aug_time_warp: false
-  aug_mixup: true
+  aug_mixup: false
   mixup_alpha: 0.2
 
 training:
@@ -88,10 +88,15 @@ training:
     hrv: 0.0
   label_smoothing: 0.0
   hrv_loss: smooth_l1
-  use_pos_weight: false
+  use_pos_weight: true
+  pos_weight_method: "effective"
   use_focal: false
   focal_gamma: 2.0
   focal_alpha: 0.25
+  use_asl: true
+  asl_gamma_pos: 1.0
+  asl_gamma_neg: 4.0
+  asl_clip: 0.05
   max_pos_weight: 30.0
   pos_weight_power: 0.75
   weighted_sampler: false

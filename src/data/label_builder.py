@@ -127,15 +127,28 @@ def get_label_statistics(
 
 def compute_pos_weights(
     label_matrix: np.ndarray,
+    method: str = "inverse",
+    beta: float = 0.999,
 ) -> np.ndarray:
     """
     Compute positive class weights for BCEWithLogitsLoss.
-    pos_weight[i] = (N - n_pos[i]) / n_pos[i]
+    method="inverse": pos_weight[i] = (N - n_pos[i]) / n_pos[i]
+    method="effective": pos_weight[i] = (1 - beta^(N - n_pos[i])) / (1 - beta^n_pos[i])
     """
     n = label_matrix.shape[0]
     n_pos = label_matrix.sum(axis=0)
     n_pos = np.clip(n_pos, 1, None)  # avoid division by zero
-    pos_weights = (n - n_pos) / n_pos
+    n_neg = n - n_pos
+
+    if method == "inverse":
+        pos_weights = n_neg / n_pos
+    elif method == "effective":
+        eff_neg = (1.0 - np.power(beta, n_neg)) / (1.0 - beta)
+        eff_pos = (1.0 - np.power(beta, n_pos)) / (1.0 - beta)
+        pos_weights = eff_neg / eff_pos
+    else:
+        raise ValueError(f"Unknown pos_weight method: {method}")
+
     return pos_weights.astype(np.float32)
 
 

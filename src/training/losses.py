@@ -48,6 +48,52 @@ class BinaryFocalLoss(nn.Module):
         return (focal_weight * bce).mean()
 
 
+class AsymmetricLoss(nn.Module):
+    """
+    Asymmetric Loss for multi-label classification.
+    ASL(p_t) = - (1-p_t)^gamma_pos * log(p_t) for y=1
+               - (p_m)^gamma_neg * log(1-p_m) for y=0
+    where p_m = max(p - m, 0)
+    """
+    def __init__(
+        self,
+        gamma_pos: float = 1.0,
+        gamma_neg: float = 4.0,
+        clip: float = 0.05,
+        pos_weight: Optional[torch.Tensor] = None,
+        eps: float = 1e-8
+    ):
+        super().__init__()
+        self.gamma_pos = gamma_pos
+        self.gamma_neg = gamma_neg
+        self.clip = clip
+        self.pos_weight = pos_weight
+        self.eps = eps
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = torch.sigmoid(logits)
+        
+        p_pos = probs
+        p_neg = 1 - probs
+
+        if self.clip > 0:
+            p_neg = (p_neg + self.clip).clamp(max=1)
+            
+        loss_pos = -targets * torch.log(p_pos.clamp(min=self.eps))
+        loss_neg = -(1 - targets) * torch.log(p_neg.clamp(min=self.eps))
+        
+        if self.gamma_pos > 0:
+            loss_pos = loss_pos * (1 - p_pos) ** self.gamma_pos
+            
+        if self.gamma_neg > 0:
+            loss_neg = loss_neg * (1 - p_neg) ** self.gamma_neg
+            
+        if self.pos_weight is not None:
+            loss_pos = loss_pos * self.pos_weight
+
+        return (loss_pos + loss_neg).mean()
+
+
 # ─── Multi-task Loss ──────────────────────────────────────────────────────────
 
 class MultiTaskLoss(nn.Module):
@@ -73,6 +119,10 @@ class MultiTaskLoss(nn.Module):
         use_focal: bool = False,     # replace BCE with Focal Loss
         focal_gamma: float = 2.0,
         focal_alpha: float = 0.25,
+        use_asl: bool = False,       # replace BCE with Asymmetric Loss
+        asl_gamma_pos: float = 1.0,
+        asl_gamma_neg: float = 4.0,
+        asl_clip: float = 0.05,
         # ── Regularization tricks ───────────────────────────────────────────
         label_smoothing: float = 0.0,
         hrv_loss_type: str = "smooth_l1",
@@ -86,12 +136,26 @@ class MultiTaskLoss(nn.Module):
         self.hrv_enabled = hrv_enabled
         self.label_smoothing = label_smoothing
         self.use_focal = use_focal
+        self.use_asl = use_asl
         self.focal_gamma = focal_gamma
         self.focal_alpha = focal_alpha
         self.arrhythmia_pos_weight = arrhythmia_pos_weight
         self.mi_pos_weight = mi_pos_weight
 
-        if use_focal:
+        if use_asl:
+            self.arrhythmia_loss_fn = AsymmetricLoss(
+                gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip,
+                pos_weight=arrhythmia_pos_weight,
+            )
+            self.mi_loss_fn = AsymmetricLoss(
+                gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip,
+                pos_weight=mi_pos_weight,
+            )
+            imi_pw = mi_pos_weight[0:1] if mi_pos_weight is not None else None
+            asmi_pw = mi_pos_weight[1:2] if mi_pos_weight is not None else None
+            self.imi_loss_fn = AsymmetricLoss(gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip, pos_weight=imi_pw)
+            self.asmi_loss_fn = AsymmetricLoss(gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip, pos_weight=asmi_pw)
+        elif use_focal:
             self.arrhythmia_loss_fn = BinaryFocalLoss(
                 gamma=focal_gamma, alpha=focal_alpha,
                 pos_weight=arrhythmia_pos_weight,

@@ -913,10 +913,17 @@ def main():
     use_focal      = cfg["training"].get("use_focal",      False)
     focal_gamma    = cfg["training"].get("focal_gamma",    2.0)
     focal_alpha    = cfg["training"].get("focal_alpha",    0.25)
+    
+    use_asl        = cfg["training"].get("use_asl",        False)
+    asl_gamma_pos  = float(cfg["training"].get("asl_gamma_pos",  1.0))
+    asl_gamma_neg  = float(cfg["training"].get("asl_gamma_neg",  4.0))
+    asl_clip       = float(cfg["training"].get("asl_clip",       0.05))
     smoothing      = cfg["training"].get("label_smoothing", 0.0)
     hrv_loss       = cfg["training"].get("hrv_loss", "smooth_l1")
     max_pos_weight = float(cfg["training"].get("max_pos_weight", 50.0))
     pos_weight_power = float(cfg["training"].get("pos_weight_power", 1.0))
+    pos_weight_method = cfg["training"].get("pos_weight_method", "inverse")
+    pos_weight_beta = float(cfg["training"].get("pos_weight_beta", 0.999))
 
     arrhy_pw, mi_pw = None, None
     if use_pos_weight:
@@ -925,7 +932,11 @@ def main():
         # This correctly reflects class imbalance in the actual training data.
         from src.data.label_builder import compute_pos_weights
         train_label_matrix = data["label_matrix"][data["splits"]["train"]]
-        raw_pw = compute_pos_weights(train_label_matrix)
+        raw_pw = compute_pos_weights(
+            train_label_matrix,
+            method=pos_weight_method,
+            beta=pos_weight_beta,
+        )
         train_pos_weights = {name: float(w) for name, w in zip(label_names, raw_pw)}
         print(f"  Train split pos_weights (raw):")
         for name, w in train_pos_weights.items():
@@ -943,6 +954,7 @@ def main():
         print("\n► pos_weight disabled (use_pos_weight=false)")
 
     print(f"  use_focal: {use_focal}  focal_gamma: {focal_gamma}  focal_alpha: {focal_alpha}")
+    print(f"  use_asl: {use_asl}  asl_gamma_pos: {asl_gamma_pos}  asl_gamma_neg: {asl_gamma_neg}  asl_clip: {asl_clip}")
     print(
         f"  label_smoothing: {smoothing}  hrv_loss: {hrv_loss}  "
         f"max_pos_weight: {max_pos_weight}  pos_weight_power: {pos_weight_power}"
@@ -960,6 +972,10 @@ def main():
         use_focal             = use_focal,
         focal_gamma           = focal_gamma,
         focal_alpha           = focal_alpha,
+        use_asl               = use_asl,
+        asl_gamma_pos         = asl_gamma_pos,
+        asl_gamma_neg         = asl_gamma_neg,
+        asl_clip              = asl_clip,
         label_smoothing       = smoothing,
         hrv_loss_type         = hrv_loss,
     )

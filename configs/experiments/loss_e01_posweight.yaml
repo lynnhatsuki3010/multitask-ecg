@@ -1,14 +1,14 @@
-# LOSS-E01: BCE with Positive Weighting (pos_weight)
-# Baseline inherited: SPLIT-E02 (random_grouped), NORM-E01 (zscore)
+# ARCH-E05: CNN + TF + Multi-scale Temporal + Clinical-guided Regional Lead Attention
+# Baseline inherited: strat_fold split, BCE Loss, no aug, uniform sampling
 #
 # TRAIN CMD:
-#   python scripts/02_train.py --config configs/experiments/loss_e01_posweight.yaml
-# BRANCH: STAGE3-LOSS
+#   python scripts/02_train.py --config configs/experiments/arch_e05_clinical_attention.yaml
+# BRANCH: TEST-ARCH-ABLATION
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_split_e02" # Reusing SPLIT-E02 data
-  splits: "data/splits_split_e02"
+  processed: "data/processed_baseline"
+  splits: "data/splits_baseline"
   checkpoints: "checkpoints"
 
 dataset:
@@ -20,16 +20,7 @@ dataset:
     IMI: 80
   normal_label: NORM
   normal_mode: exclusive
-  split_method: random_grouped
-  split_group_key: patient_id
-  split_seed: 42
-  split_train_ratio: 0.70
-  split_val_ratio: 0.15
-  split_test_ratio: 0.15
-  split_num_folds: 10
-  split_test_fold_index: 0
-  split_val_fold_index: null
-  split_stratify_label: null
+  split_method: strat_fold
   test_fold: 10
   val_fold: 9
 
@@ -53,7 +44,7 @@ preprocessing:
   bandpass_low: 0.5
   bandpass_high: 40.0
   notch_freq: 50.0
-  normalize: zscore
+  normalize: robust
 
 model:
   architecture: hybrid_transformer
@@ -69,9 +60,11 @@ model:
   dropout: 0.15
   mi_gradient_scale: 1.0
   hrv_detach: false
+  use_multi_scale: true
+  use_cross_attention: true
 
 augmentation:
-  aug_lead_dropout: false
+  aug_lead_dropout: true
   aug_random_crop: false
   aug_baseline_wander: false
   aug_time_warp: false
@@ -95,8 +88,8 @@ training:
     hrv: 0.0
   label_smoothing: 0.0
   hrv_loss: smooth_l1
-  use_pos_weight: true   # ← TEST VARIABLE
-  use_focal: false       # ← TEST VARIABLE
+  use_pos_weight: true
+  use_focal: false
   focal_gamma: 2.0
   focal_alpha: 0.25
   max_pos_weight: 30.0

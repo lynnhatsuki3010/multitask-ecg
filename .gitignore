@@ -21,6 +21,9 @@ data/raw/
 data/processed_*/
 data/splits_*/
 *.npy
+data/processed
+data/splits
+
 
 # ─── Model checkpoints ────────────────────────────────────────────
 checkpoints/

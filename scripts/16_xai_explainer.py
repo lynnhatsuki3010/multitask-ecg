@@ -69,6 +69,15 @@ _MI_LEAD_GROUPS = {
     "anterior":   [6, 7, 8, 9], # V1-V4
 }
 
+# Lead groups for arrhythmia labels
+_ARRHY_LEAD_GROUPS = {
+    "rhythm":  [1, 6],          # II, V1  — P wave & flutter wave rõ nhất
+    "lateral": [0, 4, 10, 11],  # I, aVL, V5, V6 — AFIB thường rõ ở đây
+    "septal":  [7, 8],          # V2, V3 — PVC morphology
+}
+
+_MI_LABELS = {"IMI", "ASMI"}
+
 
 # ── Gradient × Input saliency ─────────────────────────────────────────────────
 
@@ -159,9 +168,14 @@ def integrated_gradients(
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
 
-def _lead_group_label(lead_idx: int) -> str:
-    """Return a short clinical group tag for the lead axis label."""
-    for group, indices in _MI_LEAD_GROUPS.items():
+def _lead_group_label(lead_idx: int, label: str = "") -> str:
+    """Return a short clinical group tag for the lead axis label.
+
+    MI labels (IMI, ASMI) use anatomical MI lead groups (inferior/reciprocal/anterior).
+    Arrhythmia labels use rhythm-oriented groups (rhythm/lateral/septal).
+    """
+    groups = _MI_LEAD_GROUPS if label in _MI_LABELS else _ARRHY_LEAD_GROUPS
+    for group, indices in groups.items():
         if lead_idx in indices:
             return f" [{group[:3].upper()}]"
     return ""
@@ -172,6 +186,7 @@ def plot_gxi_heatmap(
     signal: np.ndarray,          # (12, T)  raw normalised ECG
     subtitle: str,
     fs: int = 500,
+    label: str = "",             # label đang được visualize — chọn đúng lead group tag
 ) -> plt.Figure:
     """
     Creates a 12-subplot figure where each subplot is one lead.
@@ -222,7 +237,7 @@ def plot_gxi_heatmap(
         ax.plot(t, lead_sig, color=line_color, linewidth=0.65, zorder=2, alpha=0.92)
 
         # ── Lead label with clinical group ─────────────────────────────────────
-        group_tag  = _lead_group_label(i)
+        group_tag  = _lead_group_label(i, label)
         imp_pct    = int(lead_importance[i] * 100)
         ax.set_ylabel(
             f"{lead_name}{group_tag}\n{imp_pct}%",
@@ -373,11 +388,22 @@ def main(args):
     ).to(device)
 
     state = torch.load(model_path, map_location=device, weights_only=False)
-    if "model_state_dict" in state:
+    if "model" in state:                    # key chuẩn từ Trainer (02_train.py)
+        state = state["model"]
+    elif "model_state_dict" in state:       # fallback cho checkpoint format cũ
         state = state["model_state_dict"]
-    model.load_state_dict(state, strict=False)
+    # else: bare state dict
+    model.load_state_dict(state, strict=True)   # strict=True: crash sớm nếu key lệch
     model.eval()
     print(f"[+] Model loaded from {model_path}")
+    # Sanity check: probs trên zero input phải lệch xa 0.5
+    with torch.no_grad():
+        _dummy = torch.zeros(1, 12, cfg["dataset"]["signal_length"]).to(device)
+        _out   = model(_dummy)
+        _p_arr = torch.sigmoid(_out["arrhythmia"][0]).cpu().numpy().round(3)
+        _p_mi  = torch.sigmoid(_out["mi"][0]).cpu().numpy().round(3)
+    print(f"[+] Sanity check — zero-input probs  arrhy={_p_arr}  mi={_p_mi}")
+    print(f"    (neu tat ca ~0.5 thi weights chua load dung)")
 
     # ── Load calibration thresholds + temperature if available ──────────────────
     cal_path = Path(args.checkpoint) / "calibration_results.json"
@@ -409,7 +435,11 @@ def main(args):
     out_root.mkdir(parents=True, exist_ok=True)
 
     # ── Per-label counters ─────────────────────────────────────────────────────
-    label_counts: Dict[str, int] = {}
+    non_norm_labels = [lbl for lbl in (arrhy_names + mi_names) if lbl != "NORM"]
+    tp_counts:    Dict[str, int] = {lbl: 0 for lbl in non_norm_labels}
+    fp_counts:    Dict[str, int] = {lbl: 0 for lbl in non_norm_labels}
+    fn_counts:    Dict[str, int] = {lbl: 0 for lbl in non_norm_labels}
+    combo_counts: Dict[str, int] = {}
     saved_total = 0
 
     method = args.method   # "gxi" or "ig"
@@ -442,13 +472,19 @@ def main(args):
         gt_labels = {lbl for j, lbl in enumerate(combined_names) if labels_gt[j] > 0.5}
         gt_path = set(gt_labels - {"NORM"})
 
-        pred_set = set(pathological)
-        tp_labels = sorted(list(pred_set & gt_path))
-        fp_labels = sorted(list(pred_set - gt_path))
-        
+        pred_set  = set(pathological)
+        tp_labels = sorted(pred_set & gt_path)        # predict đúng
+        fp_labels = sorted(pred_set - gt_path)        # predict thừa
+        fn_labels = sorted(gt_path  - pred_set)       # bỏ sót
+
+        # Track FN counts (không lưu ảnh, chỉ thống kê)
+        for lbl in fn_labels:
+            if lbl in fn_counts:
+                fn_counts[lbl] += 1
+
         if not tp_labels and not fp_labels and not args.explain_all:
             continue
-            
+
         # Filename tags
         pred_tag = "+".join(sorted(pred_set)) if pred_set else "NONE"
         gt_tag   = "+".join(sorted(gt_path))  if gt_path else "NORM"
@@ -458,17 +494,17 @@ def main(args):
         )
         patient_id = dataset.metadata.iloc[sample_idx].get("patient_id", 0)
         file_stem = f"pat{patient_id}_ecg{ecg_id}_pred[{pred_tag}]_gt[{gt_tag}]_{prob_tag}"
-        
+
         # Check quotas
-        tp_done = all(label_counts.get(f"TP_{lbl}", 0) >= args.max_per_class for lbl in tp_labels) if tp_labels else True
-        fp_done = all(label_counts.get(f"FP_{lbl}", 0) >= args.max_per_class for lbl in fp_labels) if fp_labels else True
-        
+        tp_done = all(tp_counts.get(lbl, 0) >= args.max_per_class for lbl in tp_labels) if tp_labels else True
+        fp_done = all(fp_counts.get(lbl, 0) >= args.max_per_class for lbl in fp_labels) if fp_labels else True
+
         tp_combo_key = "+".join(sorted(tp_labels)) if len(tp_labels) > 1 else None
-        tp_combo_done = label_counts.get(f"TP_COMBO_{tp_combo_key}", 0) >= args.max_per_class if tp_combo_key else True
-        
+        tp_combo_done = combo_counts.get(f"TP_COMBO_{tp_combo_key}", 0) >= args.max_per_class if tp_combo_key else True
+
         fp_combo_key = "+".join(sorted(pathological)) if fp_labels and len(pathological) > 1 else None
-        fp_combo_done = label_counts.get(f"FP_COMBO_{fp_combo_key}", 0) >= args.max_per_class if fp_combo_key else True
-        
+        fp_combo_done = combo_counts.get(f"FP_COMBO_{fp_combo_key}", 0) >= args.max_per_class if fp_combo_key else True
+
         if tp_done and fp_done and tp_combo_done and fp_combo_done:
             continue
             
@@ -491,59 +527,57 @@ def main(args):
         
         # ── 7a. Lưu TP — ảnh đơn nhãn ────────────────────────────────────
         for lbl in tp_labels:
-            key = f"TP_{lbl}"
-            if label_counts.get(key, 0) >= args.max_per_class: continue
-            
+            if tp_counts.get(lbl, 0) >= args.max_per_class: continue
+
             subtitle = f"[TP] GT: {gt_tag} | Pred: {pred_tag} | Focus: {lbl}"
-            fig = plot_gxi_heatmap(sal_maps[lbl], raw_signal, subtitle, fs)
-            
+            fig = plot_gxi_heatmap(sal_maps[lbl], raw_signal, subtitle, fs, label=lbl)
+
             folder = out_root / "TP" / lbl
             folder.mkdir(parents=True, exist_ok=True)
             fname = f"{file_stem}_map.png"
             fig.savefig(folder / fname, dpi=130, bbox_inches="tight", facecolor=fig.get_facecolor())
             plt.close(fig)
-            
-            label_counts[key] = label_counts.get(key, 0) + 1
+
+            tp_counts[lbl] = tp_counts.get(lbl, 0) + 1
             any_saved = True
-            print(f"  [XAI] TP {lbl:<8} ({label_counts[key]}/{args.max_per_class}) {fname}")
+            print(f"[XAI]  TP {lbl:<8} ({tp_counts[lbl]}/{args.max_per_class})  {fname}")
 
         # ── 7b. Lưu TP combo (≥2 TP labels) ─────────────────────────────
         if tp_combo_key and not tp_combo_done:
             key = f"TP_COMBO_{tp_combo_key}"
             subtitle = f"[TP-COMBO] GT: {gt_tag} | Pred: {pred_tag} | Focus: {tp_combo_key}"
-            
+
             combo_sal = np.zeros_like(raw_signal)
             for lbl in tp_labels: combo_sal += sal_maps[lbl]
             combo_sal /= len(tp_labels)
-            
-            fig = plot_gxi_heatmap(combo_sal, raw_signal, subtitle, fs)
+
+            fig = plot_gxi_heatmap(combo_sal, raw_signal, subtitle, fs, label=tp_labels[0] if len(tp_labels) == 1 else "")
             folder = out_root / "TP" / tp_combo_key
             folder.mkdir(parents=True, exist_ok=True)
             fname = f"{file_stem}_map.png"
             fig.savefig(folder / fname, dpi=130, bbox_inches="tight", facecolor=fig.get_facecolor())
             plt.close(fig)
-            
-            label_counts[key] = label_counts.get(key, 0) + 1
+
+            combo_counts[key] = combo_counts.get(key, 0) + 1
             any_saved = True
-            print(f"  [XAI] TP_COMBO {tp_combo_key:<15} {fname}")
+            print(f"[XAI]  TP_COMBO {tp_combo_key:<15} ({combo_counts[key]}/{args.max_per_class})  {fname}")
 
         # ── 7c. Lưu FP — ảnh đơn nhãn ────────────────────────────────────
         for lbl in fp_labels:
-            key = f"FP_{lbl}"
-            if label_counts.get(key, 0) >= args.max_per_class: continue
-            
+            if fp_counts.get(lbl, 0) >= args.max_per_class: continue
+
             subtitle = f"[FP] GT: {gt_tag} | Pred: {pred_tag} | Focus: {lbl}"
-            fig = plot_gxi_heatmap(sal_maps[lbl], raw_signal, subtitle, fs)
-            
+            fig = plot_gxi_heatmap(sal_maps[lbl], raw_signal, subtitle, fs, label=lbl)
+
             folder = out_root / "FP" / lbl
             folder.mkdir(parents=True, exist_ok=True)
             fname = f"{file_stem}_map.png"
             fig.savefig(folder / fname, dpi=130, bbox_inches="tight", facecolor=fig.get_facecolor())
             plt.close(fig)
-            
-            label_counts[key] = label_counts.get(key, 0) + 1
+
+            fp_counts[lbl] = fp_counts.get(lbl, 0) + 1
             any_saved = True
-            print(f"  [XAI] FP {lbl:<8} ({label_counts[key]}/{args.max_per_class}) {fname}")
+            print(f"[XAI]  FP {lbl:<8} ({fp_counts[lbl]}/{args.max_per_class})  {fname}")
 
         # ── 7d. Lưu FP combo (predict nhiều nhãn, một số sai) ────────────
         if fp_combo_key and not fp_combo_done:
@@ -551,21 +585,21 @@ def main(args):
             tp_str = "+".join(tp_labels) if tp_labels else "NONE"
             fp_str = "+".join(fp_labels)
             subtitle = f"[FP-COMBO] GT: {gt_tag} | TP: {tp_str} | FP: {fp_str} | Focus: {fp_combo_key}"
-            
+
             combo_sal = np.zeros_like(raw_signal)
             for lbl in pathological: combo_sal += sal_maps[lbl]
             combo_sal /= len(pathological)
-            
+
             fig = plot_gxi_heatmap(combo_sal, raw_signal, subtitle, fs)
             folder = out_root / "FP" / fp_combo_key
             folder.mkdir(parents=True, exist_ok=True)
             fname = f"{file_stem}_map.png"
             fig.savefig(folder / fname, dpi=130, bbox_inches="tight", facecolor=fig.get_facecolor())
             plt.close(fig)
-            
-            label_counts[key] = label_counts.get(key, 0) + 1
+
+            combo_counts[key] = combo_counts.get(key, 0) + 1
             any_saved = True
-            print(f"  [XAI] FP_COMBO {fp_combo_key:<15} {fname}")
+            print(f"[XAI]  FP_COMBO {fp_combo_key:<15} ({combo_counts[key]}/{args.max_per_class})  {fname}")
 
         if any_saved:
             saved_total += 1
@@ -575,9 +609,18 @@ def main(args):
             break
 
     print(f"\n[DONE] Saved {saved_total} heatmaps to: {out_root}")
-    print("Label distribution saved:")
-    for k, v in sorted(label_counts.items()):
-        print(f"  {k:30s} {v} samples")
+
+    # ── Summary table (matches old version format) ─────────────────────────
+    print(f"\n{'Label':<12} {'TP':>6} {'FP':>6} {'FN':>6}")
+    print("-" * 34)
+    for lbl in sorted(non_norm_labels):
+        print(f"  {lbl:<10} {tp_counts.get(lbl, 0):>6} {fp_counts.get(lbl, 0):>6} {fn_counts.get(lbl, 0):>6}")
+
+    if combo_counts:
+        print(f"\n{'Combo':<35} {'Count':>5}")
+        print("-" * 43)
+        for combo, n in sorted(combo_counts.items()):
+            print(f"  {combo:<33}  {n:>5}")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

@@ -18,8 +18,9 @@ ENV/
 
 # ─── Data ─────────────────────────────────────────────────────────
 data/raw/
-data/processed*/
-data/splits*/
+data/processed_*/
+data/splits_*/
+*.npy
 
 # ─── Model checkpoints ────────────────────────────────────────────
 checkpoints/

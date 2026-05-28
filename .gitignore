@@ -46,3 +46,6 @@ runs/
 wandb/
 scripts/_tmp*
 tmp_sweep_configs/
+
+# ─── XAI ─────────────────────────────────────────────────────────
+artifacts/

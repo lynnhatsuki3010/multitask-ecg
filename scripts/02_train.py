@@ -672,17 +672,17 @@ def build_pos_weight_tensors(
     pos_weights: dict,
     arrhy_names: list,
     mi_names: list,
+    cond_names: list,
     device: torch.device,
     max_weight: float = 50.0,
     power: float = 1.0,
 ) -> tuple:
     """
     Build pos_weight tensors for BCEWithLogitsLoss from pos_weights.json.
-    Clamps each weight to max_weight to prevent gradient explosion
-    (e.g. AFLT raw=298 → clamped to 50).
+    Clamps each weight to max_weight to prevent gradient explosion.
 
     Returns:
-        (arrhy_pw_tensor, mi_pw_tensor)  — both on `device`
+        (arrhy_pw, mi_pw, cond_pw) — all on `device`
     """
     def _build(names):
         weights = []
@@ -694,6 +694,7 @@ def build_pos_weight_tensors(
 
     arrhy_pw = _build(arrhy_names)
     mi_pw    = _build(mi_names)
+    cond_pw  = _build(cond_names)
 
     print(f"  Arrhythmia pos_weights (clamped ≤{max_weight}):")
     for n, w in zip(arrhy_names, arrhy_pw.tolist()):
@@ -823,24 +824,28 @@ def main():
     print("  ECG Multi-Task Training")
     print(f"{'='*60}\n")
 
-    # ── Create timestamped run directory ──────────────────────────────────────
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Encode active flags in the folder name for quick identification
-    tag_parts = []
-    architecture = cfg.get("model", {}).get("architecture", "hybrid_transformer")
-    tag_parts.append(architecture.replace("_transformer", "-tf"))
-    if cfg["training"].get("use_focal"):        tag_parts.append("focal")
-    if cfg["training"].get("weighted_sampler"): tag_parts.append("wrs")
-    aug_cfg = cfg.get("augmentation", {})
-    if any([v for k, v in aug_cfg.items() if k.startswith("aug_") and v]):
-        tag_parts.append("aug")
-        if aug_cfg.get("aug_mixup"):
-            tag_parts.append("mxp")
-    if args.debug:                              tag_parts.append("debug")
-    tag = ("_" + "-".join(tag_parts)) if tag_parts else ""
-    run_name = f"run_{ts}{tag}"
-    run_dir  = os.path.join(cfg["paths"]["checkpoints"], run_name)
-    os.makedirs(run_dir, exist_ok=True)
+    # ── Create or resume run directory ────────────────────────────────────────
+    if args.resume:
+        run_dir = os.path.dirname(os.path.abspath(args.resume))
+        print(f"  Resuming in existing run directory: {run_dir}")
+    else:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Encode active flags in the folder name for quick identification
+        tag_parts = []
+        architecture = cfg.get("model", {}).get("architecture", "hybrid_transformer")
+        tag_parts.append(architecture.replace("_transformer", "-tf"))
+        if cfg["training"].get("use_focal"):        tag_parts.append("focal")
+        if cfg["training"].get("weighted_sampler"): tag_parts.append("wrs")
+        aug_cfg = cfg.get("augmentation", {})
+        if any([v for k, v in aug_cfg.items() if k.startswith("aug_") and v]):
+            tag_parts.append("aug")
+            if aug_cfg.get("aug_mixup"):
+                tag_parts.append("mxp")
+        if args.debug:                              tag_parts.append("debug")
+        tag = ("_" + "-".join(tag_parts)) if tag_parts else ""
+        run_name = f"run_{ts}{tag}"
+        run_dir  = os.path.join(cfg["paths"]["checkpoints"], run_name)
+        os.makedirs(run_dir, exist_ok=True)
 
     # Override checkpoint path so Trainer saves into run_dir
     cfg["paths"]["checkpoints"] = run_dir
@@ -861,13 +866,16 @@ def main():
     label_names    = [l["name"] for l in label_cfgs]
     arrhy_indices  = [l["index"] for l in label_cfgs if l["task"] in ("arrhythmia", "normal")]
     mi_indices     = [l["index"] for l in label_cfgs if l["task"] == "mi"]
+    cond_indices   = [l["index"] for l in label_cfgs if l["task"] == "conduction"]
     arrhy_names    = [label_names[i] for i in arrhy_indices]
     mi_names       = [label_names[i] for i in mi_indices]
+    cond_names     = [label_names[i] for i in cond_indices]
     hrv_features   = cfg.get("hrv", {}).get("features", ["rmssd", "sdnn", "mean_hr"])
     hrv_enabled    = cfg.get("hrv", {}).get("enabled", True)
 
     print(f"  Arrhythmia labels [{len(arrhy_names)}]: {arrhy_names}")
     print(f"  MI labels         [{len(mi_names)}]: {mi_names}")
+    print(f"  Conduction labels [{len(cond_names)}]: {cond_names}")
     print(f"  HRV enabled: {hrv_enabled}")
 
     # ── Z-score normalize HRV targets (train stats only) ────────────────────
@@ -893,6 +901,7 @@ def main():
         num_arrhythmia_labels=len(arrhy_indices),
         num_mi_labels=len(mi_indices),
         num_hrv_targets=len(hrv_features),
+        num_conduction_labels=len(cond_indices),
     )
     print(f"  Architecture: {model_cfg.get('architecture', 'hybrid_transformer')}")
 
@@ -900,11 +909,17 @@ def main():
     print(f"  Trainable parameters: {total_params:,}")
 
     # ── Resume checkpoint ─────────────────────────────────────────────────────
+    start_epoch = 1
+    optimizer_state = None
     if args.resume:
         print(f"\n► Resuming from: {args.resume}")
         ckpt = load_checkpoint(args.resume, map_location="cpu")
         model.load_state_dict(ckpt["model"])
-        print(f"  Resumed from epoch {ckpt['epoch']}")
+        if "epoch" in ckpt:
+            start_epoch = ckpt["epoch"] + 1
+        if "optimizer" in ckpt:
+            optimizer_state = ckpt["optimizer"]
+        print(f"  Resumed from epoch {ckpt.get('epoch', 0)}. Next epoch: {start_epoch}")
 
     # ── Loss ─────────────────────────────────────────────────────────────────
     lw = cfg["training"].get("loss_weights", {})
@@ -925,7 +940,7 @@ def main():
     pos_weight_method = cfg["training"].get("pos_weight_method", "inverse")
     pos_weight_beta = float(cfg["training"].get("pos_weight_beta", 0.999))
 
-    arrhy_pw, mi_pw = None, None
+    arrhy_pw, mi_pw, cond_pw = None, None, None
     if use_pos_weight:
         print("\n► Building pos_weight tensors (from train split only) ...")
         # Compute pos_weight from TRAIN SPLIT only (not entire dataset)
@@ -942,10 +957,11 @@ def main():
         for name, w in train_pos_weights.items():
             print(f"    {name}: {w:.3f}")
 
-        arrhy_pw, mi_pw = build_pos_weight_tensors(
+        arrhy_pw, mi_pw, cond_pw = build_pos_weight_tensors(
             train_pos_weights,
             arrhy_names,
             mi_names,
+            cond_names,
             device,
             max_weight=max_pos_weight,
             power=pos_weight_power,
@@ -963,12 +979,14 @@ def main():
     loss_fn = MultiTaskLoss(
         arrhythmia_weight     = lw.get("arrhythmia", 1.0),
         mi_weight             = lw.get("mi",         1.0),
+        conduction_weight     = lw.get("conduction", 1.0),
         imi_weight            = lw.get("imi",        1.0),
         asmi_weight           = lw.get("asmi",       1.0),
         hrv_weight            = lw.get("hrv",        0.1),
         hrv_enabled           = hrv_enabled,
         arrhythmia_pos_weight = arrhy_pw,
         mi_pos_weight         = mi_pw,
+        conduction_pos_weight = cond_pw,
         use_focal             = use_focal,
         focal_gamma           = focal_gamma,
         focal_alpha           = focal_alpha,
@@ -980,7 +998,6 @@ def main():
         hrv_loss_type         = hrv_loss,
     )
 
-    # ── Trainer ───────────────────────────────────────────────────────────────
     trainer = Trainer(
         model                    = model,
         loss_fn                  = loss_fn,
@@ -990,9 +1007,13 @@ def main():
         device                   = device,
         arrhythmia_label_indices = arrhy_indices,
         mi_label_indices         = mi_indices,
+        conduction_label_indices = cond_indices,
         arrhythmia_label_names   = arrhy_names,
         mi_label_names           = mi_names,
+        conduction_label_names   = cond_names,
         hrv_feature_names        = hrv_features,
+        start_epoch              = start_epoch,
+        optimizer_state          = optimizer_state,
     )
 
     # ── Train ─────────────────────────────────────────────────────────────────

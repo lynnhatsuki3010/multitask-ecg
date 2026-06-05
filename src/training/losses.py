@@ -109,6 +109,7 @@ class MultiTaskLoss(nn.Module):
         self,
         arrhythmia_weight: float = 1.0,
         mi_weight: float = 1.0,
+        conduction_weight: float = 1.0,
         imi_weight: float = 1.0,
         asmi_weight: float = 1.0,
         hrv_weight: float = 0.1,
@@ -116,6 +117,7 @@ class MultiTaskLoss(nn.Module):
         # ── Class imbalance tricks ──────────────────────────────────────────
         arrhythmia_pos_weight: Optional[torch.Tensor] = None,   # BCE pos_weight
         mi_pos_weight: Optional[torch.Tensor] = None,
+        conduction_pos_weight: Optional[torch.Tensor] = None,
         use_focal: bool = False,     # replace BCE with Focal Loss
         focal_gamma: float = 2.0,
         focal_alpha: float = 0.25,
@@ -130,6 +132,7 @@ class MultiTaskLoss(nn.Module):
         super().__init__()
         self.arrhythmia_weight = arrhythmia_weight
         self.mi_weight = mi_weight
+        self.conduction_weight = conduction_weight
         self.imi_weight = imi_weight
         self.asmi_weight = asmi_weight
         self.hrv_weight = hrv_weight
@@ -141,6 +144,7 @@ class MultiTaskLoss(nn.Module):
         self.focal_alpha = focal_alpha
         self.arrhythmia_pos_weight = arrhythmia_pos_weight
         self.mi_pos_weight = mi_pos_weight
+        self.conduction_pos_weight = conduction_pos_weight
 
         if use_asl:
             self.arrhythmia_loss_fn = AsymmetricLoss(
@@ -150,6 +154,10 @@ class MultiTaskLoss(nn.Module):
             self.mi_loss_fn = AsymmetricLoss(
                 gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip,
                 pos_weight=mi_pos_weight,
+            )
+            self.conduction_loss_fn = AsymmetricLoss(
+                gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip,
+                pos_weight=conduction_pos_weight,
             )
             imi_pw = mi_pos_weight[0:1] if mi_pos_weight is not None else None
             asmi_pw = mi_pos_weight[1:2] if mi_pos_weight is not None else None
@@ -164,6 +172,10 @@ class MultiTaskLoss(nn.Module):
                 gamma=focal_gamma, alpha=focal_alpha,
                 pos_weight=mi_pos_weight,
             )
+            self.conduction_loss_fn = BinaryFocalLoss(
+                gamma=focal_gamma, alpha=focal_alpha,
+                pos_weight=conduction_pos_weight,
+            )
             # Pre-built per-label focal losses for IMI/ASMI split path
             imi_pw = mi_pos_weight[0:1] if mi_pos_weight is not None else None
             asmi_pw = mi_pos_weight[1:2] if mi_pos_weight is not None else None
@@ -175,6 +187,9 @@ class MultiTaskLoss(nn.Module):
             )
             self.mi_loss_fn = nn.BCEWithLogitsLoss(
                 pos_weight=mi_pos_weight
+            )
+            self.conduction_loss_fn = nn.BCEWithLogitsLoss(
+                pos_weight=conduction_pos_weight
             )
             # Pre-built per-label BCE for IMI/ASMI split path
             imi_pw = mi_pos_weight[0:1] if mi_pos_weight is not None else None
@@ -209,9 +224,13 @@ class MultiTaskLoss(nn.Module):
             eps = self.label_smoothing
             arrhy_targets = targets["arrhythmia"] * (1.0 - eps)
             mi_targets    = targets["mi"]          * (1.0 - eps)
+            cond_targets  = targets.get("conduction", None)
+            if cond_targets is not None:
+                cond_targets = cond_targets * (1.0 - eps)
         else:
             arrhy_targets = targets["arrhythmia"]
             mi_targets    = targets["mi"]
+            cond_targets  = targets.get("conduction", None)
 
         # Arrhythmia loss
         losses["arrhythmia"] = self.arrhythmia_loss_fn(
@@ -256,10 +275,19 @@ class MultiTaskLoss(nn.Module):
         else:
             losses["hrv"] = torch.tensor(0.0, device=preds["arrhythmia"].device)
 
+        # Conduction loss
+        if cond_targets is not None and "conduction" in preds:
+            losses["conduction"] = self.conduction_loss_fn(
+                preds["conduction"], cond_targets
+            )
+        else:
+            losses["conduction"] = torch.tensor(0.0, device=preds["arrhythmia"].device)
+
         # Weighted total
         losses["total"] = (
             self.arrhythmia_weight * losses["arrhythmia"]
             + self.mi_weight       * losses["mi"]
+            + self.conduction_weight * losses["conduction"]
             + self.hrv_weight      * losses["hrv"]
         )
 

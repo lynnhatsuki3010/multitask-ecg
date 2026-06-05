@@ -392,3 +392,292 @@ class HybridTransformerBackbone(nn.Module):
             "global_features": global_features,
             "sequence_features": sequence_features,
         }
+
+
+class _ExpertBranch(nn.Module):
+    """One expert Transformer branch with its own CLS token, PE and encoder.
+
+    Receives the CNN feature sequence (shared) and produces its own
+    independent global vector + sequence features.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        num_layers: int,
+        dim_feedforward: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+        self.positional_encoding = SinusoidalPositionalEncoding(d_model, max_len=1024, dropout=dropout)
+        self.pre_norm = nn.LayerNorm(d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
+            norm=nn.LayerNorm(d_model),
+        )
+        self.pool = AttentionPooling(d_model)
+        self.fuse = nn.Sequential(
+            nn.Linear(d_model * 2, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.LayerNorm(d_model),
+        )
+
+    def forward(self, shared_seq: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Args:
+            shared_seq: (B, T, d_model) — CNN token sequence from shared front-end.
+        Returns:
+            global_features:   (B, d_model)
+            sequence_features: (B, T, d_model)
+        """
+        seq = self.pre_norm(shared_seq)
+        B = seq.size(0)
+        cls = self.cls_token.expand(B, -1, -1)
+        tokens = self.positional_encoding(torch.cat([cls, seq], dim=1))
+        encoded = self.encoder(tokens)
+        cls_feat = encoded[:, 0]
+        seq_feat = encoded[:, 1:]
+        pooled = self.pool(seq_feat)
+        global_feat = self.fuse(torch.cat([cls_feat, pooled], dim=-1))
+        return {"global_features": global_feat, "sequence_features": seq_feat}
+
+
+
+class ConductionLeadGroupEncoder(nn.Module):
+    """Dedicated lead-group encoder for Conduction Disturbance detection.
+
+    Bundle-branch blocks manifest as QRS widening / morphology changes at:
+      - Right precordial leads V1-V3  → RBBB (RSR' pattern, 'rabbit ears')
+      - Left precordial + lateral leads V5, V6, I, aVL  → LBBB (wide R, absent q)
+
+    This encoder extracts independent representations from each group and
+    fuses them so the Conduction head has anatomy-aware raw-signal features,
+    analogous to what MILeadGroupEncoder provides for MI.
+    """
+
+    # PTB-XL 12-lead order: I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6
+    # Indices:               0   1   2    3    4    5   6   7   8   9  10  11
+    RIGHT_LEADS = [6, 7, 8]        # V1, V2, V3  — RBBB focus
+    LEFT_LEADS  = [10, 11, 0, 4]  # V5, V6, I, aVL  — LBBB focus
+
+    def __init__(self, out_dim: int, dropout: float = 0.1) -> None:
+        super().__init__()
+        # Shared LeadGroupEncoder architecture (same as MI branch)
+        self.right_encoder = _make_lead_encoder(
+            in_channels=len(self.RIGHT_LEADS), out_dim=out_dim, dropout=dropout
+        )
+        self.left_encoder = _make_lead_encoder(
+            in_channels=len(self.LEFT_LEADS), out_dim=out_dim, dropout=dropout
+        )
+        # Fuse right + left into a single conduction representation
+        self.fuse = nn.Sequential(
+            nn.Linear(out_dim * 2, out_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, signal: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            signal: (B, 12, T) raw ECG signal
+        Returns:
+            cond_lead_features: (B, out_dim)
+        """
+        right_feat = self.right_encoder(signal[:, self.RIGHT_LEADS, :])
+        left_feat  = self.left_encoder(signal[:, self.LEFT_LEADS, :])
+        return self.fuse(torch.cat([right_feat, left_feat], dim=-1))
+
+
+def _make_lead_encoder(in_channels: int, out_dim: int, dropout: float) -> nn.Module:
+    """Factory for a small 3-conv lead encoder (same design as LeadGroupEncoder)."""
+    return nn.Sequential(
+        _LeadEncoderNet(in_channels, out_dim, dropout),
+    )
+
+
+class _LeadEncoderNet(nn.Module):
+    """Internal: CNN + dual-pool projection used by ConductionLeadGroupEncoder."""
+
+    def __init__(self, in_channels: int, out_dim: int, dropout: float) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(in_channels, 32, kernel_size=15, stride=4, padding=7, bias=False),
+            nn.BatchNorm1d(32), nn.GELU(),
+            nn.Conv1d(32, 64, kernel_size=9, stride=2, padding=4, bias=False),
+            nn.BatchNorm1d(64), nn.GELU(),
+            nn.Conv1d(64, out_dim, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm1d(out_dim), nn.GELU(),
+        )
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.max_pool = nn.AdaptiveMaxPool1d(1)
+        self.proj = nn.Sequential(
+            nn.Linear(out_dim * 2, out_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.net(x)
+        avg = self.avg_pool(h).squeeze(-1)
+        mx  = self.max_pool(h).squeeze(-1)
+        return self.proj(torch.cat([avg, mx], dim=-1))
+
+
+class MultiBranchTransformerBackbone(nn.Module):
+    """Shared CNN front-end → 3 independent Transformer Expert Branches.
+
+    Architecture:
+        ECG (B, 12, T)
+              ↓
+        Shared CNN Front-End  [MorphologyConvFrontEnd]
+              ↓
+        Optional shared Transformer layers (num_shared_layers)
+              ↓
+        ┌──────────────────────────────────────────────────┐
+        │  Arrhythmia Expert  (arrhy_layers, arrhy_nhead)  │
+        │  MI Expert          (mi_layers,    mi_nhead)     │
+        │  Conduction Expert  (cond_layers,  cond_nhead)   │
+        └──────────────────────────────────────────────────┘
+        Each expert builds its own attention map from scratch.
+
+    Additionally exposes ConductionLeadGroupEncoder outputs so the
+    ConductionHead can fuse anatomy-specific raw-signal features
+    (V1-V3 for RBBB, V5+V6+I+aVL for LBBB).
+
+    output_dim = d_model  (same contract as HybridTransformerBackbone)
+    """
+
+    def __init__(
+        self,
+        num_leads: int = 12,
+        d_model: int = 256,
+        stem_dim: int = 96,
+        downsample_factor: int = 20,
+        stage_dims: List[int] | None = None,
+        # Shared transformer layers
+        nhead: int = 8,
+        num_shared_layers: int = 2,
+        dim_feedforward: int = 512,
+        dropout: float = 0.1,
+        # Per-expert configs — if None, falls back to shared defaults
+        arrhy_layers: int | None = None,
+        arrhy_nhead: int | None = None,
+        arrhy_ffn: int | None = None,
+        mi_layers: int | None = None,
+        mi_nhead: int | None = None,
+        mi_ffn: int | None = None,
+        cond_layers: int | None = None,
+        cond_nhead: int | None = None,
+        cond_ffn: int | None = None,
+        # Misc
+        num_expert_layers: int = 2,   # fallback for all experts if per-expert not set
+        use_se: bool = False,
+        use_multi_scale: bool = False,
+        cd_lead_out_dim: int = 128,   # output dim of ConductionLeadGroupEncoder
+    ) -> None:
+        super().__init__()
+        self.output_dim = d_model
+        stage_dims = stage_dims or [128, 192, d_model]
+
+        # ── Shared CNN front-end ────────────────────────────────────────────
+        self.front_end = MorphologyConvFrontEnd(
+            num_leads=num_leads,
+            stem_dim=stem_dim,
+            stage_dims=stage_dims,
+            downsample_factor=downsample_factor,
+            dropout=dropout,
+            use_se=use_se,
+        )
+        self.use_multi_scale = use_multi_scale
+        if use_multi_scale:
+            self.multi_scale = MultiScaleTemporalBranch(stage_dims[-1], d_model, dropout=dropout)
+            self.sequence_proj = nn.Identity()
+        else:
+            self.sequence_proj = nn.Conv1d(stage_dims[-1], d_model, kernel_size=1, bias=False)
+
+        # ── Optional shared Transformer layers (before branching) ───────────
+        self.num_shared_layers = num_shared_layers
+        if num_shared_layers > 0:
+            self.pre_norm_shared = nn.LayerNorm(d_model)
+            shared_enc_layer = nn.TransformerEncoderLayer(
+                d_model=d_model, nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout, batch_first=True, norm_first=True,
+            )
+            self.shared_encoder = nn.TransformerEncoder(
+                shared_enc_layer, num_layers=num_shared_layers, norm=nn.LayerNorm(d_model),
+            )
+
+        # ── Expert branches (heterogeneous configs) ─────────────────────────
+        def _make_expert(layers, e_nhead, e_ffn):
+            return _ExpertBranch(
+                d_model=d_model,
+                nhead=e_nhead or nhead,
+                num_layers=layers or num_expert_layers,
+                dim_feedforward=e_ffn or dim_feedforward,
+                dropout=dropout,
+            )
+
+        self.arrhythmia_expert = _make_expert(arrhy_layers, arrhy_nhead, arrhy_ffn)
+        self.mi_expert         = _make_expert(mi_layers,    mi_nhead,    mi_ffn)
+        self.conduction_expert = _make_expert(cond_layers,  cond_nhead,  cond_ffn)
+
+        # ── Conduction Lead Group Encoder ────────────────────────────────────
+        self.cd_lead_encoder = ConductionLeadGroupEncoder(
+            out_dim=cd_lead_out_dim, dropout=dropout
+        )
+        self.cd_lead_out_dim = cd_lead_out_dim
+
+    def _cnn_to_seq(self, x: torch.Tensor) -> torch.Tensor:
+        """Run CNN front-end and project to (B, T, d_model)."""
+        conv = self.front_end(x)
+        if self.use_multi_scale:
+            seq = self.multi_scale(conv)
+            return self.sequence_proj(seq).transpose(1, 2)
+        return self.sequence_proj(conv).transpose(1, 2)
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        shared_seq = self._cnn_to_seq(x)               # (B, T, d_model)
+
+        if self.num_shared_layers > 0:
+            shared_seq = self.shared_encoder(
+                self.pre_norm_shared(shared_seq)
+            )
+
+        arrhy_out = self.arrhythmia_expert(shared_seq)
+        mi_out    = self.mi_expert(shared_seq)
+        cond_out  = self.conduction_expert(shared_seq)
+
+        # Conduction lead-group encoder (raw signal features)
+        cd_lead_feats = self.cd_lead_encoder(x)        # (B, cd_lead_out_dim)
+
+        return {
+            # Arrhythmia branch outputs
+            "arrhy_global":   arrhy_out["global_features"],
+            "arrhy_seq":      arrhy_out["sequence_features"],
+            # MI branch outputs
+            "mi_global":      mi_out["global_features"],
+            "mi_seq":         mi_out["sequence_features"],
+            # Conduction branch outputs
+            "cond_global":    cond_out["global_features"],
+            "cond_seq":       cond_out["sequence_features"],
+            "cond_lead_feats": cd_lead_feats,
+            # Backward-compat aliases (used by old code paths)
+            "global_features":   arrhy_out["global_features"],
+            "sequence_features": arrhy_out["sequence_features"],
+        }
+
+

@@ -128,11 +128,11 @@ def build_loader(cfg: dict, df, label_matrix, hrv_matrix, indices, augment=False
 # ─── Logit Extraction ─────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def extract_logits(model, loader, arrhy_idx, mi_idx, device):
+def extract_logits(model, loader, arrhy_idx, mi_idx, cond_idx, device):
     """Run inference and collect raw logits + targets for all samples."""
     model.eval()
-    all_logits_arrhy, all_logits_mi = [], []
-    all_targets_arrhy, all_targets_mi = [], []
+    all_logits_arrhy, all_logits_mi, all_logits_cond = [], [], []
+    all_targets_arrhy, all_targets_mi, all_targets_cond = [], [], []
 
     for batch in loader:
         signal = batch["signal"].to(device)
@@ -140,19 +140,25 @@ def extract_logits(model, loader, arrhy_idx, mi_idx, device):
 
         target_arrhy = labels[:, arrhy_idx]
         target_mi    = labels[:, mi_idx]
+        target_cond  = labels[:, cond_idx]
 
         preds = model(signal)
 
         all_logits_arrhy.append(preds["arrhythmia"].cpu())
         all_logits_mi.append(preds["mi"].cpu())
+        if "conduction" in preds:
+            all_logits_cond.append(preds["conduction"].cpu())
         all_targets_arrhy.append(target_arrhy.cpu())
         all_targets_mi.append(target_mi.cpu())
+        all_targets_cond.append(target_cond.cpu())
 
     return (
         torch.cat(all_logits_arrhy, dim=0),
         torch.cat(all_logits_mi, dim=0),
+        torch.cat(all_logits_cond, dim=0) if all_logits_cond else None,
         torch.cat(all_targets_arrhy, dim=0),
         torch.cat(all_targets_mi, dim=0),
+        torch.cat(all_targets_cond, dim=0),
     )
 
 
@@ -208,11 +214,14 @@ def main(checkpoint_dir: str):
     label_names  = [l["name"] for l in label_cfgs]
     arrhy_indices = [l["index"] for l in label_cfgs if l["task"] in ("arrhythmia", "normal")]
     mi_indices    = [l["index"] for l in label_cfgs if l["task"] == "mi"]
+    cond_indices  = [l["index"] for l in label_cfgs if l["task"] == "conduction"]
     arrhy_names   = [label_names[i] for i in arrhy_indices]
     mi_names      = [label_names[i] for i in mi_indices]
+    cond_names    = [label_names[i] for i in cond_indices]
 
     print(f"Arrhythmia labels: {arrhy_names}")
     print(f"MI labels:         {mi_names}")
+    print(f"Conduction labels: {cond_names}")
 
     # ── Load data
     print("\n[+] Loading preprocessed data...")
@@ -230,6 +239,7 @@ def main(checkpoint_dir: str):
         cfg=cfg,
         num_arrhythmia_labels=len(arrhy_indices),
         num_mi_labels=len(mi_indices),
+        num_conduction_labels=len(cond_indices),
         num_hrv_targets=len(hrv_features),
     ).to(device)
     ckpt  = torch.load(model_path, map_location=device)
@@ -239,10 +249,10 @@ def main(checkpoint_dir: str):
 
     # ── Extract logits
     print("\n[+] Extracting Val logits...")
-    val_la, val_lm, val_ta, val_tm = extract_logits(model, val_loader, arrhy_indices, mi_indices, device)
+    val_la, val_lm, val_lc, val_ta, val_tm, val_tc = extract_logits(model, val_loader, arrhy_indices, mi_indices, cond_indices, device)
 
     print("\n[+] Extracting Test logits...")
-    test_la, test_lm, test_ta, test_tm = extract_logits(model, test_loader, arrhy_indices, mi_indices, device)
+    test_la, test_lm, test_lc, test_ta, test_tm, test_tc = extract_logits(model, test_loader, arrhy_indices, mi_indices, cond_indices, device)
 
     # ── Baseline Test metrics (no calibration)
     print("\n=== Baseline Test Metrics (T=1.0, tau=0.5) ===")
@@ -255,17 +265,29 @@ def main(checkpoint_dir: str):
     print(f"  Arrhythmia Macro F1: {base_met_a.get('f1/arrhy/macro', 0):.4f}")
     print(f"  MI Macro F1:         {base_met_m.get('f1/mi/macro', 0):.4f}")
     print(f"  IMI AUPRC:           {base_met_m.get('auprc/mi/IMI', 0):.4f}")
+    
+    base_met_c = {}
+    if test_lc is not None:
+        base_probs_c = torch.sigmoid(test_lc).numpy()
+        base_pred_c  = (base_probs_c >= 0.5).astype(float)
+        base_met_c = compute_classification_metrics(test_tc.numpy(), base_probs_c, base_pred_c, cond_names, prefix="cond/")
+        print(f"  Conduction Macro F1: {base_met_c.get('f1/cond/macro', 0):.4f}")
 
     # ── Temperature Scaling
     print("\n[+] Optimizing Temperature (T) on Validation Set...")
     T_a = optimize_temperature(val_la, val_ta.float(), "Arrhythmia")
     T_m = optimize_temperature(val_lm, val_tm.float(), "MI")
+    T_c = 1.0
+    if val_lc is not None:
+        T_c = optimize_temperature(val_lc, val_tc.float(), "Conduction")
 
     # Scale logits
     val_la_s  = val_la  / T_a
     val_lm_s  = val_lm  / T_m
     test_la_s = test_la / T_a
     test_lm_s = test_lm / T_m
+    val_lc_s  = val_lc / T_c if val_lc is not None else None
+    test_lc_s = test_lc / T_c if test_lc is not None else None
 
     # ── Threshold Tuning on scaled Val logits
     print("\n[+] Tuning Per-class Thresholds on Scaled Val Set...")
@@ -283,9 +305,16 @@ def main(checkpoint_dir: str):
         val_tm.numpy(), val_probs_m, mi_names,
         min_threshold = th_cfg.get("min_threshold", 0.15),
     )
+    cond_thresholds = {}
+    if val_lc_s is not None:
+        val_probs_c = torch.sigmoid(val_lc_s).numpy()
+        cond_thresholds = find_optimal_thresholds(
+            val_tc.numpy(), val_probs_c, cond_names,
+            min_threshold = th_cfg.get("min_threshold", 0.15),
+        )
 
     print("  Optimal thresholds:")
-    for name, tau in {**arrhy_thresholds, **mi_thresholds}.items():
+    for name, tau in {**arrhy_thresholds, **mi_thresholds, **cond_thresholds}.items():
         print(f"    {name}: {tau:.3f}")
 
     # ── Calibrated Test Metrics
@@ -309,18 +338,30 @@ def main(checkpoint_dir: str):
     print(f"  MI Macro F1:         {cal_met_m.get('f1/mi/macro', 0):.4f}  (was {base_met_m.get('f1/mi/macro', 0):.4f})")
     print(f"  IMI AUPRC:           {cal_met_m.get('auprc/mi/IMI', 0):.4f}  (was {base_met_m.get('auprc/mi/IMI', 0):.4f})")
 
+    cal_met_c = {}
+    if test_lc_s is not None:
+        test_probs_c = torch.sigmoid(test_lc_s).numpy()
+        test_pred_c = np.stack([
+            (test_probs_c[:, i] >= cond_thresholds[name]).astype(float)
+            for i, name in enumerate(cond_names)
+        ], axis=1)
+        cal_met_c = compute_classification_metrics(test_tc.numpy(), test_probs_c, test_pred_c, cond_names, prefix="cond/")
+        print(f"  Conduction Macro F1: {cal_met_c.get('f1/cond/macro', 0):.4f}  (was {base_met_c.get('f1/cond/macro', 0):.4f})")
+
     # ── Save results
     all_metrics = {}
     for k, v in cal_met_a.items(): all_metrics[k] = v
     for k, v in cal_met_m.items(): all_metrics[k] = v
+    for k, v in cal_met_c.items(): all_metrics[k] = v
 
     results = {
-        "temperature": {"arrhythmia": T_a, "mi": T_m},
-        "thresholds": {**arrhy_thresholds, **mi_thresholds},
+        "temperature": {"arrhythmia": T_a, "mi": T_m, "conduction": T_c},
+        "thresholds": {**arrhy_thresholds, **mi_thresholds, **cond_thresholds},
         "baseline_metrics": {
             "f1/arrhy/macro": base_met_a.get("f1/arrhy/macro", 0),
             "f1/mi/macro":    base_met_m.get("f1/mi/macro", 0),
             "auprc/mi/IMI":   base_met_m.get("auprc/mi/IMI", 0),
+            "f1/cond/macro":  base_met_c.get("f1/cond/macro", 0),
         },
         "calibrated_metrics": {k: v for k, v in all_metrics.items() if isinstance(v, float)},
     }

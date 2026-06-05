@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import List
 
-from src.models.backbones import CNNBackbone, HybridTransformerBackbone
+from src.models.backbones import CNNBackbone, HybridTransformerBackbone, MultiBranchTransformerBackbone
 from src.models.ecg_multitask import ECGMultiTaskModel
 
 
@@ -21,6 +21,7 @@ def build_model(
     num_arrhythmia_labels: int,
     num_mi_labels: int,
     num_hrv_targets: int,
+    num_conduction_labels: int = 0,
 ):
     model_cfg = cfg.get("model", {})
     architecture = model_cfg.get("architecture", "hybrid_transformer")
@@ -56,10 +57,36 @@ def build_model(
             use_se=use_se,
             use_multi_scale=use_multi_scale,
         )
+    elif architecture == "multi_branch_transformer":
+        backbone = MultiBranchTransformerBackbone(
+            num_leads=cfg["dataset"]["num_leads"],
+            d_model=d_model,
+            stem_dim=stem_dim,
+            downsample_factor=downsample_factor,
+            stage_dims=_parse_stage_dims(model_cfg, d_model),
+            nhead=int(model_cfg.get("nhead", 8)),
+            num_shared_layers=int(model_cfg.get("num_shared_layers", 2)),
+            num_expert_layers=int(model_cfg.get("num_expert_layers", 2)),
+            dim_feedforward=int(model_cfg.get("dim_feedforward", d_model * 2)),
+            dropout=dropout,
+            use_se=use_se,
+            use_multi_scale=use_multi_scale,
+            # Per-expert heterogeneous configs (optional — fall back to defaults if absent)
+            arrhy_layers=model_cfg.get("arrhy_layers"),
+            arrhy_nhead=model_cfg.get("arrhy_nhead"),
+            arrhy_ffn=model_cfg.get("arrhy_ffn"),
+            mi_layers=model_cfg.get("mi_layers"),
+            mi_nhead=model_cfg.get("mi_nhead"),
+            mi_ffn=model_cfg.get("mi_ffn"),
+            cond_layers=model_cfg.get("cond_layers"),
+            cond_nhead=model_cfg.get("cond_nhead"),
+            cond_ffn=model_cfg.get("cond_ffn"),
+            cd_lead_out_dim=int(model_cfg.get("cd_lead_out_dim", 128)),
+        )
     else:
         raise ValueError(
             f"Unsupported model.architecture='{architecture}'. "
-            "Use 'cnn' or 'hybrid_transformer'."
+            "Use 'cnn', 'hybrid_transformer', or 'multi_branch_transformer'."
         )
 
     head_hidden_dim = int(model_cfg.get("head_hidden_dim", d_model // 2))
@@ -71,6 +98,7 @@ def build_model(
         backbone=backbone,
         num_arrhythmia_labels=num_arrhythmia_labels,
         num_mi_labels=num_mi_labels,
+        num_conduction_labels=num_conduction_labels,
         hrv_enabled=hrv_enabled,
         num_hrv_targets=num_hrv_targets,
         head_hidden_dim=head_hidden_dim,
@@ -80,3 +108,4 @@ def build_model(
         mi_gradient_scale=mi_gradient_scale,
         use_cross_attention=use_cross_attention,
     )
+

@@ -239,17 +239,19 @@ class MetricsAccumulator:
     Accumulates model outputs across batches for epoch-level metric computation.
     """
 
-    def __init__(self, arrhythmia_labels: List[str], mi_labels: List[str], hrv_enabled: bool = True):
+    def __init__(self, arrhythmia_labels: List[str], mi_labels: List[str], conduction_labels: List[str] = None, hrv_enabled: bool = True):
         self.arrhythmia_labels = arrhythmia_labels
         self.mi_labels = mi_labels
+        self.conduction_labels = conduction_labels or []
         self.hrv_enabled = hrv_enabled
         self.reset()
 
     def reset(self):
         self.arrhythmia_true,  self.arrhythmia_score,  self.arrhythmia_pred  = [], [], []
         self.mi_true,          self.mi_score,           self.mi_pred          = [], [], []
+        self.cond_true,        self.cond_score,         self.cond_pred        = [], [], []
         self.hrv_true,         self.hrv_pred                                  = [], []
-        self.losses = {"total": [], "arrhythmia": [], "mi": [], "imi": [], "asmi": [], "hrv": []}
+        self.losses = {"total": [], "arrhythmia": [], "mi": [], "imi": [], "asmi": [], "conduction": [], "hrv": []}
 
     def update(
         self,
@@ -275,6 +277,15 @@ class MetricsAccumulator:
             self.mi_score.append(mi_score)
             self.mi_pred.append(mi_pred)
             self.mi_true.append(mi_true)
+
+            # Conduction
+            if "conduction" in preds_raw and "conduction" in targets:
+                cond_score = torch.sigmoid(preds_raw["conduction"]).cpu().numpy()
+                cond_pred  = (cond_score >= threshold).astype(float)
+                cond_true  = targets["conduction"].cpu().numpy()
+                self.cond_score.append(cond_score)
+                self.cond_pred.append(cond_pred)
+                self.cond_true.append(cond_true)
 
             # HRV
             if self.hrv_enabled and "hrv" in preds_raw:
@@ -310,6 +321,12 @@ class MetricsAccumulator:
             y_pred  = np.concatenate(self.mi_pred,  axis=0)
             metrics.update(compute_classification_metrics(y_true, y_score, y_pred, self.mi_labels, prefix="mi/"))
 
+        # Conduction metrics
+        if self.cond_true:
+            y_true  = np.concatenate(self.cond_true, axis=0)
+            y_score = np.concatenate(self.cond_score, axis=0)
+            y_pred  = np.concatenate(self.cond_pred,  axis=0)
+            metrics.update(compute_classification_metrics(y_true, y_score, y_pred, self.conduction_labels, prefix="cond/"))
         # HRV metrics
         if self.hrv_enabled and self.hrv_pred:
             y_true = np.concatenate(self.hrv_true, axis=0)

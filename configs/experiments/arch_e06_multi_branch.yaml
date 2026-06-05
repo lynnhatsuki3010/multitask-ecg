@@ -1,14 +1,10 @@
-# ============================================================
-# BASELINE CONFIG — All techniques disabled ("Ground Zero")
-# Used as the starting point for all ablation stages.
-#
-# DO NOT MODIFY THIS FILE for experiments.
-# Copy to configs/experiments/<stage>_<exp>.yaml and change ONE thing.
-# ============================================================
+# ARCH-E06: Multi-Branch Expert Architecture (v2)
+# Heterogeneous expert blocks + ConductionLeadGroupEncoder + updated CD labels
+# CD labels: LBBB (CLBBB+LAFB+ILBBB), RBBB (CRBBB), IRBBB, 1AVB
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_baseline"   # each experiment gets its own folder
+  processed: "data/processed_baseline"
   splits: "data/splits_baseline"
   checkpoints: "checkpoints"
 
@@ -21,13 +17,9 @@ dataset:
     IMI: 80
   normal_label: NORM
   normal_mode: exclusive
-
-  # ── Split: PTB-XL native strat_fold (baseline) ──────────────────
   split_method: strat_fold
-  test_fold: 10         # PTB-XL standard test fold
-  val_fold: 9           # PTB-XL standard val fold
-
-  # unused for strat_fold, kept for reference:
+  test_fold: 10
+  val_fold: 9
   split_seed: 42
   split_group_key: patient_id
   split_train_ratio: 0.70
@@ -85,31 +77,46 @@ label_groups:
   conduction: [9, 10, 11, 12]
 
 hrv:
-  enabled: false          # HRV disabled across all ablation stages
+  enabled: false
 
 preprocessing:
   bandpass_low: 0.5
   bandpass_high: 40.0
   notch_freq: 50.0
-  normalize: zscore       # Stage 2 will test alternatives
+  normalize: robust
 
 model:
-  architecture: hybrid_transformer
+  architecture: multi_branch_transformer
   d_model: 256
   stem_dim: 96
   downsample_factor: 20
   nhead: 8
-  num_encoder_layers: 4
+  # Shared Transformer layers (general feature extraction before branching)
+  num_shared_layers: 2
+  # Per-expert configs — all equal (CD is main task, same capacity as others)
+  num_expert_layers: 2   # fallback if per-expert not set
+  arrhy_layers: 2
+  arrhy_nhead: 8
+  arrhy_ffn: 512
+  mi_layers: 2
+  mi_nhead: 8
+  mi_ffn: 512
+  cond_layers: 2
+  cond_nhead: 8
+  cond_ffn: 512
   dim_feedforward: 512
   cnn_stage_dims: [128, 192, 256]
   head_hidden_dim: 128
   mi_branch_dim: 128
+  cd_lead_out_dim: 128    # ConductionLeadGroupEncoder output dim
   dropout: 0.15
-  mi_gradient_scale: 1.0   # DISABLED — Stage 6 will test this
+  mi_gradient_scale: 1.0
   hrv_detach: false
+  use_multi_scale: true
+  use_cross_attention: true
 
 augmentation:
-  aug_lead_dropout: false   # DISABLED — Stage 4 will test
+  aug_lead_dropout: true
   aug_random_crop: false
   aug_baseline_wander: false
   aug_time_warp: false
@@ -118,34 +125,34 @@ augmentation:
 
 training:
   batch_size: 96
-  epochs: 15                     # short runs for ablation
-  freeze_backbone_at_epoch: -1   # DISABLED — Phase 2 strategy off
+  epochs: 15
+  freeze_backbone_at_epoch: -1
   lr: 1.0e-4
   weight_decay: 1.0e-3
-  mi_lr_multiplier: 1.0          # DISABLED — Stage 6 will test
+  mi_lr_multiplier: 1.0
   scheduler: cosine
   warmup_epochs: 2
   loss_weights:
     arrhythmia: 1.0
-    mi: 1.0                      # equal weights — Stage 3 will test
+    mi: 1.0
     conduction: 1.0
     imi: 1.0
     asmi: 1.0
     hrv: 0.0
-  label_smoothing: 0.0           # DISABLED — Stage 3 will test
+  label_smoothing: 0.0
   hrv_loss: smooth_l1
-  use_pos_weight: false           # DISABLED — Stage 3 will test
-  use_focal: false                # DISABLED — Stage 3 will test
+  use_pos_weight: false
+  use_focal: false
   focal_gamma: 2.0
   focal_alpha: 0.25
   max_pos_weight: 30.0
   pos_weight_power: 0.75
-  weighted_sampler: false         # DISABLED — Stage 5 will test
+  weighted_sampler: false
   seed: 42
   num_workers: 0
   pin_memory: true
   save_every: 5
-  early_stopping_patience: 15    # no early stop during ablation
+  early_stopping_patience: 15
   monitor_metric: imi_auprc
 
 eval:
@@ -161,9 +168,9 @@ eval:
       AFLT: 2.0
       IMI: 1.5
       ASMI: 1.2
-      ILMI: 1.5   # inferolateral MI — high clinical significance
-      AMI: 1.5    # anterior MI — high clinical significance
-      LBBB: 1.2   # LBBB masks MI patterns — important confounder
+      ILMI: 1.5
+      AMI: 1.5
+      LBBB: 1.2
       RBBB: 1.0
       IRBBB: 1.0
       1AVB: 1.0

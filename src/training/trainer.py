@@ -75,11 +75,15 @@ class Trainer:
         device: torch.device,
         arrhythmia_label_indices: list,   # indices in full label vector that belong to arrhythmia
         mi_label_indices: list,           # indices in full label vector that belong to MI
+        conduction_label_indices: list = None,
         arrhythmia_label_names: list = ARRHYTHMIA_LABELS,
         mi_label_names: list = MI_LABELS,
+        conduction_label_names: list = None,
         hrv_feature_names: list = ["rmssd", "sdnn", "mean_hr"],
         update_weights: bool = True,
         optuna_trial = None,
+        start_epoch: int = 1,
+        optimizer_state: dict = None,
     ):
         self.model = model.to(device)
         self.loss_fn = loss_fn.to(device)
@@ -90,8 +94,10 @@ class Trainer:
         self.optuna_trial = optuna_trial
         self.arrhythmia_idx = arrhythmia_label_indices
         self.mi_idx = mi_label_indices
+        self.conduction_idx = conduction_label_indices or []
         self.arrhythmia_label_names = arrhythmia_label_names
         self.mi_label_names = mi_label_names
+        self.conduction_label_names = conduction_label_names or []
         self.hrv_feature_names = hrv_feature_names
         self.hrv_enabled = cfg.get("hrv", {}).get("enabled", True)
         eval_cfg = cfg.get("eval", {})
@@ -106,6 +112,7 @@ class Trainer:
         self.monitor_metric = train_cfg.get("monitor_metric", "macro_f1")
         self.checkpoint_dir = cfg.get("paths", {}).get("checkpoints", "checkpoints")
         self.freeze_epoch = train_cfg.get("freeze_backbone_at_epoch", -1)
+        self.start_epoch = start_epoch
 
         # ── Optimizer — AdamW with differential weight decay + MI head LR ─────────
         # Embedding / LayerNorm / bias params should NOT be weight-decayed:
@@ -149,6 +156,10 @@ class Trainer:
         # Remove empty groups
         param_groups = [g for g in param_groups if len(g["params"]) > 0]
         self.optimizer = AdamW(param_groups)
+
+        if optimizer_state is not None:
+            self.optimizer.load_state_dict(optimizer_state)
+            print("  Loaded optimizer state from checkpoint.")
 
         n_mi = len(mi_decay) + len(mi_nodecay)
         n_other = len(other_decay) + len(other_nodecay)
@@ -220,6 +231,25 @@ class Trainer:
         self.history: Dict[str, list] = {"train": [], "val": []}
         self.best_monitor_value = -1.0
         self.no_improve_count = 0
+        
+        # Restore history if resuming
+        if self.start_epoch > 1 and self.checkpoint_dir:
+            hist_path = os.path.join(self.checkpoint_dir, "history.json")
+            if os.path.exists(hist_path):
+                try:
+                    with open(hist_path, "r") as f:
+                        self.history = json.load(f)
+                    
+                    # Recompute best monitor value from val history
+                    for epoch_metrics in self.history.get("val", []):
+                        val = self._compute_monitor_value(epoch_metrics)
+                        if val > self.best_monitor_value:
+                            self.best_monitor_value = val
+                            
+                    print(f"  Loaded history from {hist_path}")
+                    print(f"  Restored best {self.monitor_metric}: {self.best_monitor_value:.4f}")
+                except Exception as e:
+                    print(f"  [warn] Could not load history.json: {e}")
 
         _tuned_metrics = ("imi_f1_tuned", "macro_f1_tuned", "mi_macro_f1_tuned")
         if self.monitor_metric in _tuned_metrics and self.val_tune_thresholds_every <= 0:
@@ -274,10 +304,13 @@ class Trainer:
 
     def _split_labels(self, batch_labels: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Split the full label vector into per-task tensors."""
-        return {
+        out = {
             "arrhythmia": batch_labels[:, self.arrhythmia_idx],
             "mi":         batch_labels[:, self.mi_idx],
         }
+        if len(self.conduction_idx) > 0:
+            out["conduction"] = batch_labels[:, self.conduction_idx]
+        return out
 
     # ── One epoch ─────────────────────────────────────────────────────────────
 
@@ -290,6 +323,7 @@ class Trainer:
         accum = MetricsAccumulator(
             arrhythmia_labels=self.arrhythmia_label_names,
             mi_labels=self.mi_label_names,
+            conduction_labels=self.conduction_label_names,
             hrv_enabled=self.hrv_enabled,
         )
         ctx = torch.enable_grad() if train else torch.no_grad()
@@ -356,6 +390,8 @@ class Trainer:
                         "hrv": targets["hrv"],
                         "hrv_valid": targets["hrv_valid"],
                     }
+                    if "conduction" in targets:
+                        metric_targets["conduction"] = (targets["conduction"] >= 0.5).float()
 
                 accum.update(preds, metric_targets, loss_dict, self.threshold)
                 
@@ -376,7 +412,7 @@ class Trainer:
         print(f"  Monitoring: {self._monitor_label()}")
         print(f"{'='*60}\n")
 
-        for epoch in range(1, self.epochs + 1):
+        for epoch in range(self.start_epoch, self.epochs + 1):
             if epoch == self.freeze_epoch:
                 print(f"\n{'-'*60}")
                 print(f"  [Phase 2 Initiated] Freezing Backbone & Arrhythmia Head")
@@ -529,6 +565,7 @@ class Trainer:
 
         a_scores, a_trues = [], []
         mi_scores, mi_trues = [], []
+        cond_scores, cond_trues = [], []
 
         with torch.no_grad():
             for batch in loader:
@@ -542,11 +579,17 @@ class Trainer:
                 a_trues.append(targets["arrhythmia"].cpu().numpy())
                 mi_scores.append(F.sigmoid(preds["mi"]).cpu().numpy())
                 mi_trues.append(targets["mi"].cpu().numpy())
+                if "conduction" in preds and "conduction" in targets:
+                    cond_scores.append(F.sigmoid(preds["conduction"]).cpu().numpy())
+                    cond_trues.append(targets["conduction"].cpu().numpy())
 
         a_score = np.concatenate(a_scores)
         a_true  = np.concatenate(a_trues)
         mi_score = np.concatenate(mi_scores)
         mi_true  = np.concatenate(mi_trues)
+        if cond_scores:
+            cond_score = np.concatenate(cond_scores)
+            cond_true  = np.concatenate(cond_trues)
 
         threshold_cfg = self.cfg.get("eval", {}).get("threshold_search", {})
         global_floor  = float(threshold_cfg.get("min_threshold", 0.1))
@@ -579,6 +622,13 @@ class Trainer:
         )
 
         thresholds = {**arrhy_t, **mi_t}
+        if cond_scores:
+            cond_t = find_optimal_thresholds(
+                cond_true, cond_score, self.conduction_label_names,
+                min_pos_count=min_pos_count, max_rare_threshold=rare_cap,
+                min_threshold=global_floor, class_beta=class_beta,
+            )
+            thresholds.update(cond_t)
 
         if verbose:
             print("\n  Optimal thresholds (val set, F_beta sweep):")
@@ -617,8 +667,9 @@ class Trainer:
         self.model.eval()
         a_scores, a_trues = [], []
         mi_scores, mi_trues = [], []
+        cond_scores, cond_trues = [], []
         hrv_preds, hrv_trues = [], []
-        losses = {"total": [], "arrhythmia": [], "mi": [], "imi": [], "asmi": [], "hrv": []}
+        losses = {"total": [], "arrhythmia": [], "mi": [], "imi": [], "asmi": [], "conduction": [], "hrv": []}
 
         with torch.no_grad():
             for batch in loader:
@@ -640,6 +691,9 @@ class Trainer:
                 a_trues.append(targets["arrhythmia"].cpu().numpy())
                 mi_scores.append(F.sigmoid(preds["mi"]).cpu().numpy())
                 mi_trues.append(targets["mi"].cpu().numpy())
+                if "conduction" in preds and "conduction" in targets:
+                    cond_scores.append(F.sigmoid(preds["conduction"]).cpu().numpy())
+                    cond_trues.append(targets["conduction"].cpu().numpy())
                 if self.hrv_enabled and "hrv" in preds:
                     hrv_preds.append(preds["hrv"].cpu().numpy())
                     hrv_trues.append(hrv.cpu().numpy())
@@ -658,6 +712,12 @@ class Trainer:
         mi_true  = np.concatenate(mi_trues)
         mi_pred  = apply_thresholds(mi_score, self.mi_label_names, thresholds)
         metrics.update(compute_classification_metrics(mi_true, mi_score, mi_pred, self.mi_label_names, prefix="mi/"))
+
+        if cond_scores:
+            cond_score = np.concatenate(cond_scores)
+            cond_true  = np.concatenate(cond_trues)
+            cond_pred  = apply_thresholds(cond_score, self.conduction_label_names, thresholds)
+            metrics.update(compute_classification_metrics(cond_true, cond_score, cond_pred, self.conduction_label_names, prefix="cond/"))
 
         if self.hrv_enabled and hrv_preds:
             metrics.update(compute_hrv_metrics(

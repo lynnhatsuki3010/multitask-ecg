@@ -435,6 +435,7 @@ def main():
 
     # ── 2. Build label matrix ─────────────────────────────────────────────────
     print("\n► Building label matrix ...")
+    label_groups = cfg.get("label_groups_override", None)  # optional per-run override
     label_matrix, labels = build_label_matrix(
         df,
         selected_labels,
@@ -442,6 +443,7 @@ def main():
         label_threshold_overrides=label_threshold_overrides,
         normal_label=normal_label,
         normal_mode=normal_mode,
+        label_groups=label_groups,   # None → uses DEFAULT_LABEL_GROUPS from label_builder
     )
 
     stats = get_label_statistics(label_matrix, labels)

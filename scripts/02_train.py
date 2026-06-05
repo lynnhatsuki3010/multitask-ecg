@@ -426,6 +426,9 @@ def parse_args():
     p.add_argument("--split-test-fold-index", type=int, default=None, help="Override dataset.split_test_fold_index from config for audit/reproducibility")
     p.add_argument("--split-val-fold-index", type=int, default=None, help="Override dataset.split_val_fold_index from config for audit/reproducibility")
     p.add_argument("--split-stratify-label", default=None, help="Override dataset.split_stratify_label from config for audit/reproducibility")
+    
+    # Contrastive Loss
+    p.add_argument("--mi-contrastive-weight", type=float, default=None, help="Weight for MI contrastive loss")
     return p.parse_args()
 
 
@@ -806,6 +809,9 @@ def main():
     if args.focal_gamma is not None:
         cfg["training"]["focal_gamma"] = args.focal_gamma
     if args.weighted_sampler:   cfg["training"]["weighted_sampler"]   = True
+    
+    if args.mi_contrastive_weight is not None:
+        cfg["training"]["mi_contrastive_weight"] = args.mi_contrastive_weight
 
     # ── Focal + WeightedSampler: complementary when capped ───────────────
     # Capped sampler (5x) + focal loss are complementary, not conflicting:
@@ -966,6 +972,7 @@ def main():
         imi_weight            = lw.get("imi",        1.0),
         asmi_weight           = lw.get("asmi",       1.0),
         hrv_weight            = lw.get("hrv",        0.1),
+        mi_contrastive_weight = cfg["training"].get("mi_contrastive_weight", 0.0),
         hrv_enabled           = hrv_enabled,
         arrhythmia_pos_weight = arrhy_pw,
         mi_pos_weight         = mi_pw,

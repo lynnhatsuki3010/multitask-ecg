@@ -94,6 +94,71 @@ class AsymmetricLoss(nn.Module):
         return (loss_pos + loss_neg).mean()
 
 
+# ─── Supervised Contrastive Loss ──────────────────────────────────────────────
+
+class SupervisedContrastiveLoss(nn.Module):
+    """
+    Supervised Contrastive Learning loss.
+    Adapted for multi-label by defining positive pairs as samples that have exactly the same label combination.
+    Features should be L2 normalized before passing into this loss.
+    """
+    def __init__(self, temperature=0.07, base_temperature=0.07):
+        super().__init__()
+        self.temperature = temperature
+        self.base_temperature = base_temperature
+
+    def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """
+        features: [B, D] L2 normalized embeddings
+        labels: [B, C] Multi-label binary targets
+        """
+        device = features.device
+        batch_size = features.shape[0]
+
+        if batch_size < 2:
+            return torch.tensor(0.0, device=device)
+
+        # Compute exact match mask
+        # labels: [B, C] -> mask: [B, B]
+        labels_eq = (labels.unsqueeze(1) == labels.unsqueeze(0)).all(dim=-1)
+        mask = labels_eq.float().to(device)
+
+        # compute logits
+        anchor_dot_contrast = torch.div(
+            torch.matmul(features, features.T),
+            self.temperature
+        )
+        
+        # for numerical stability
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+        logits = anchor_dot_contrast - logits_max.detach()
+
+        # mask-out self-contrast cases
+        logits_mask = torch.scatter(
+            torch.ones_like(mask),
+            1,
+            torch.arange(batch_size).view(-1, 1).to(device),
+            0
+        )
+        mask = mask * logits_mask
+
+        # compute log_prob
+        exp_logits = torch.exp(logits) * logits_mask
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-12)
+
+        # mask sum
+        mask_sum = mask.sum(1)
+        valid_rows = (mask_sum > 0).float()
+        mask_sum = mask_sum.clamp(min=1.0)
+        
+        mean_log_prob_pos = (mask * log_prob).sum(1) / mask_sum
+
+        # loss
+        loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
+        loss = (loss * valid_rows).sum() / (valid_rows.sum() + 1e-12)
+
+        return loss
+
 # ─── Multi-task Loss ──────────────────────────────────────────────────────────
 
 class MultiTaskLoss(nn.Module):
@@ -112,6 +177,7 @@ class MultiTaskLoss(nn.Module):
         imi_weight: float = 1.0,
         asmi_weight: float = 1.0,
         hrv_weight: float = 0.1,
+        mi_contrastive_weight: float = 0.0,
         hrv_enabled: bool = True,
         # ── Class imbalance tricks ──────────────────────────────────────────
         arrhythmia_pos_weight: Optional[torch.Tensor] = None,   # BCE pos_weight
@@ -133,6 +199,7 @@ class MultiTaskLoss(nn.Module):
         self.imi_weight = imi_weight
         self.asmi_weight = asmi_weight
         self.hrv_weight = hrv_weight
+        self.mi_contrastive_weight = mi_contrastive_weight
         self.hrv_enabled = hrv_enabled
         self.label_smoothing = label_smoothing
         self.use_focal = use_focal
@@ -141,6 +208,11 @@ class MultiTaskLoss(nn.Module):
         self.focal_alpha = focal_alpha
         self.arrhythmia_pos_weight = arrhythmia_pos_weight
         self.mi_pos_weight = mi_pos_weight
+        
+        if self.mi_contrastive_weight > 0:
+            self.supcon_loss_fn = SupervisedContrastiveLoss()
+        else:
+            self.supcon_loss_fn = None
 
         if use_asl:
             self.arrhythmia_loss_fn = AsymmetricLoss(
@@ -262,5 +334,11 @@ class MultiTaskLoss(nn.Module):
             + self.mi_weight       * losses["mi"]
             + self.hrv_weight      * losses["hrv"]
         )
+
+        if self.mi_contrastive_weight > 0 and "mi_proj" in preds:
+            losses["mi_contrastive"] = self.supcon_loss_fn(preds["mi_proj"], targets["mi"])
+            losses["total"] = losses["total"] + self.mi_contrastive_weight * losses["mi_contrastive"]
+        else:
+            losses["mi_contrastive"] = torch.tensor(0.0, device=preds["arrhythmia"].device)
 
         return losses

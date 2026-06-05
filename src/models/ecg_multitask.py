@@ -127,6 +127,12 @@ class MIHead(nn.Module):
             hidden_dim=branch_dim,
             dropout=dropout,
         )
+        self.mi_projection = MLPHead(
+            imi_in_dim + asmi_in_dim,
+            128,
+            hidden_dim=branch_dim,
+            dropout=dropout,
+        )
 
     def forward(
         self,
@@ -159,9 +165,17 @@ class MIHead(nn.Module):
             reciprocal = self.reciprocal_encoder(signal[:, self.RECIPROCAL_LEADS, :])
             anterior = self.anterior_encoder(signal[:, self.ANTERIOR_LEADS, :])
             
-        imi = self.imi_head(torch.cat([shared_features, imi_tokens, inferior, reciprocal], dim=-1))
-        asmi = self.asmi_head(torch.cat([shared_features, asmi_tokens, anterior], dim=-1))
-        return torch.cat([imi, asmi], dim=-1)
+        z_imi = torch.cat([shared_features, imi_tokens, inferior, reciprocal], dim=-1)
+        z_asmi = torch.cat([shared_features, asmi_tokens, anterior], dim=-1)
+        
+        imi = self.imi_head(z_imi)
+        asmi = self.asmi_head(z_asmi)
+        
+        z = torch.cat([z_imi, z_asmi], dim=-1)
+        h = self.mi_projection(z)
+        h = torch.nn.functional.normalize(h, dim=1)
+        
+        return torch.cat([imi, asmi], dim=-1), h
 
 
 class ECGMultiTaskModel(nn.Module):
@@ -247,9 +261,12 @@ class ECGMultiTaskModel(nn.Module):
             mi_shared = shared_features
             mi_seq = sequence_features
 
+        mi_logits, mi_proj = self.mi_head(x, mi_shared, mi_seq)
+        
         outputs = {
             "arrhythmia": self.arrhythmia_head(rhythm_features),
-            "mi": self.mi_head(x, mi_shared, mi_seq),
+            "mi": mi_logits,
+            "mi_proj": mi_proj,
         }
 
         if self.hrv_enabled:

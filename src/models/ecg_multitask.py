@@ -43,6 +43,37 @@ class TaskTokenPooling(nn.Module):
         return self.dropout(pooled)
 
 
+class PerLeadEncoder(nn.Module):
+    """Encodes each lead independently using a 1D CNN to produce a single feature vector per lead."""
+    def __init__(self, out_dim: int, dropout: float) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=15, stride=4, padding=7, bias=False),
+            nn.BatchNorm1d(32),
+            nn.GELU(),
+            nn.Conv1d(32, 64, kernel_size=9, stride=2, padding=4, bias=False),
+            nn.BatchNorm1d(64),
+            nn.GELU(),
+            nn.Conv1d(64, out_dim, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm1d(out_dim),
+            nn.GELU(),
+        )
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.max_pool = nn.AdaptiveMaxPool1d(1)
+        self.proj = nn.Sequential(
+            nn.Linear(out_dim * 2, out_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.net(x)
+        avg = self.avg_pool(h).squeeze(-1)
+        mx = self.max_pool(h).squeeze(-1)
+        pooled = self.proj(torch.cat([avg, mx], dim=-1))
+        return pooled
+
+
 class LeadGroupEncoder(nn.Module):
     """Small dedicated encoder for clinically relevant MI lead groups."""
 
@@ -78,42 +109,51 @@ class LeadGroupEncoder(nn.Module):
 
 
 class MIHead(nn.Module):
-    """Transformer-centric MI head with anatomy-aware CNN support.
+    """Graph Transformer-centric MI head.
 
-    IMI uses two complementary lead groups:
-      - INFERIOR_LEADS   [II, III, aVF]: direct leads (Q waves, ST elevation)
-      - RECIPROCAL_LEADS [I, aVL]:       reciprocal ST depression equally diagnostic
-    ASMI uses ANTERIOR_LEADS [V1-V4].
+    Treats the 12 leads as nodes in a graph. Each lead is encoded independently,
+    injected with a learnable lead embedding, and allowed to exchange information
+    via Self-Attention (Graph Transformer) to capture complex inter-lead interactions
+    like reciprocal ST depression.
     """
 
     INFERIOR_LEADS = [1, 2, 5]      # II, III, aVF
     RECIPROCAL_LEADS = [0, 4]       # I, aVL
     ANTERIOR_LEADS = [6, 7, 8, 9]   # V1, V2, V3, V4
+    
+    NUM_LEADS = 12
 
     def __init__(self, shared_dim: int, branch_dim: int, dropout: float, use_cross_attention: bool = False) -> None:
         super().__init__()
-        self.use_cross_attention = use_cross_attention
+        self.use_cross_attention = use_cross_attention  # Kept for compatibility but not used in Graph mode
+        
         self.imi_token_pool = TaskTokenPooling(shared_dim, dropout)
         self.asmi_token_pool = TaskTokenPooling(shared_dim, dropout)
         
-        self.inferior_encoder = LeadGroupEncoder(len(self.INFERIOR_LEADS), branch_dim, dropout)
-        self.reciprocal_encoder = LeadGroupEncoder(len(self.RECIPROCAL_LEADS), branch_dim // 2, dropout)
-        self.anterior_encoder = LeadGroupEncoder(len(self.ANTERIOR_LEADS), branch_dim, dropout)
+        # 1. Per-lead spatial morphology encoder
+        self.per_lead_encoder = PerLeadEncoder(out_dim=branch_dim, dropout=dropout)
         
-        if use_cross_attention:
-            self.cross_attn_inferior = nn.MultiheadAttention(embed_dim=shared_dim, num_heads=4, batch_first=True, dropout=dropout)
-            self.cross_attn_reciprocal = nn.MultiheadAttention(embed_dim=shared_dim, num_heads=4, batch_first=True, dropout=dropout)
-            self.cross_attn_anterior = nn.MultiheadAttention(embed_dim=shared_dim, num_heads=4, batch_first=True, dropout=dropout)
-            
-            self.proj_k_inf = nn.Conv1d(branch_dim, shared_dim, kernel_size=1)
-            self.proj_k_rec = nn.Conv1d(branch_dim // 2, shared_dim, kernel_size=1)
-            self.proj_k_ant = nn.Conv1d(branch_dim, shared_dim, kernel_size=1)
-            
-            imi_in_dim = shared_dim * 2 + shared_dim + shared_dim
-            asmi_in_dim = shared_dim * 2 + shared_dim
-        else:
-            imi_in_dim = shared_dim * 2 + branch_dim + branch_dim // 2
-            asmi_in_dim = shared_dim * 2 + branch_dim
+        # 2. Learnable lead embeddings to inject positional/identity info
+        self.lead_embeddings = nn.Parameter(torch.randn(1, self.NUM_LEADS, branch_dim))
+        nn.init.normal_(self.lead_embeddings, std=0.02)
+        
+        # 3. Graph Transformer Encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=branch_dim,
+            nhead=4,
+            dim_feedforward=branch_dim * 2,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True
+        )
+        self.graph_transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        
+        # 4. Pooling for the extracted nodes
+        self.imi_node_pool = TaskTokenPooling(branch_dim, dropout)
+        self.asmi_node_pool = TaskTokenPooling(branch_dim, dropout)
+
+        imi_in_dim = shared_dim * 2 + branch_dim
+        asmi_in_dim = shared_dim * 2 + branch_dim
 
         self.imi_head = MLPHead(
             imi_in_dim,
@@ -134,33 +174,36 @@ class MIHead(nn.Module):
         shared_features: torch.Tensor,
         sequence_features: torch.Tensor,
     ) -> torch.Tensor:
+        B, L, T = signal.size()
+        
         imi_tokens = self.imi_token_pool(sequence_features)
         asmi_tokens = self.asmi_token_pool(sequence_features)
         
-        if self.use_cross_attention:
-            _, inf_seq = self.inferior_encoder(signal[:, self.INFERIOR_LEADS, :], return_sequence=True)
-            _, rec_seq = self.reciprocal_encoder(signal[:, self.RECIPROCAL_LEADS, :], return_sequence=True)
-            _, ant_seq = self.anterior_encoder(signal[:, self.ANTERIOR_LEADS, :], return_sequence=True)
-            
-            inf_seq = self.proj_k_inf(inf_seq).transpose(1, 2)
-            rec_seq = self.proj_k_rec(rec_seq).transpose(1, 2)
-            ant_seq = self.proj_k_ant(ant_seq).transpose(1, 2)
-            
-            q = shared_features.unsqueeze(1)
-            inf_attn, _ = self.cross_attn_inferior(q, inf_seq, inf_seq)
-            rec_attn, _ = self.cross_attn_reciprocal(q, rec_seq, rec_seq)
-            ant_attn, _ = self.cross_attn_anterior(q, ant_seq, ant_seq)
-            
-            inferior = inf_attn.squeeze(1)
-            reciprocal = rec_attn.squeeze(1)
-            anterior = ant_attn.squeeze(1)
-        else:
-            inferior = self.inferior_encoder(signal[:, self.INFERIOR_LEADS, :])
-            reciprocal = self.reciprocal_encoder(signal[:, self.RECIPROCAL_LEADS, :])
-            anterior = self.anterior_encoder(signal[:, self.ANTERIOR_LEADS, :])
-            
-        imi = self.imi_head(torch.cat([shared_features, imi_tokens, inferior, reciprocal], dim=-1))
-        asmi = self.asmi_head(torch.cat([shared_features, asmi_tokens, anterior], dim=-1))
+        # Process each lead independently
+        x_reshaped = signal.view(B * L, 1, T)
+        node_features = self.per_lead_encoder(x_reshaped)  # (B*12, branch_dim)
+        
+        # Reshape to graph format and inject embeddings
+        nodes = node_features.view(B, L, -1)               # (B, 12, branch_dim)
+        nodes = nodes + self.lead_embeddings
+        
+        # Apply Graph Transformer
+        graph_nodes = self.graph_transformer(nodes)        # (B, 12, branch_dim)
+        
+        # Extract specific nodes for IMI
+        imi_lead_indices = self.INFERIOR_LEADS + self.RECIPROCAL_LEADS
+        imi_graph_nodes = graph_nodes[:, imi_lead_indices, :]  # (B, 5, branch_dim)
+        imi_pooled = self.imi_node_pool(imi_graph_nodes)       # (B, branch_dim)
+        
+        # Extract specific nodes for ASMI
+        asmi_lead_indices = self.ANTERIOR_LEADS
+        asmi_graph_nodes = graph_nodes[:, asmi_lead_indices, :] # (B, 4, branch_dim)
+        asmi_pooled = self.asmi_node_pool(asmi_graph_nodes)     # (B, branch_dim)
+        
+        # Final classification
+        imi = self.imi_head(torch.cat([shared_features, imi_tokens, imi_pooled], dim=-1))
+        asmi = self.asmi_head(torch.cat([shared_features, asmi_tokens, asmi_pooled], dim=-1))
+        
         return torch.cat([imi, asmi], dim=-1)
 
 

@@ -252,6 +252,70 @@ Instead of feeding pre-defined anatomical groups (Inferior, Anterior, Reciprocal
 3. **Graph Transformer**: A 2-layer, 4-head Transformer Encoder processes the 12 nodes, allowing global Self-Attention to dynamically route and compare information between any pair of leads.
 4. **Node Pooling**: The updated nodes corresponding to the Inferior/Reciprocal leads are pooled for the IMI prediction, and Anterior nodes are pooled for ASMI.
 
+```mermaid
+graph TD
+    Input["ECG Signal\n(B x 12 x 5000)"]
+
+    subgraph SharedBackbone["Shared CNN + Transformer Backbone"]
+        CNN["Shared CNN Front-End\nDepthwise + Pointwise + Residual blocks"]
+        TF["Transformer Encoder\nCLS + sequence features"]
+        Global["shared_context\n(B x 256)"]
+        Seq["sequence_features\n(B x T x 256)"]
+    end
+
+    Input --> CNN --> TF
+    TF --> Global
+    TF --> Seq
+
+    subgraph ArrhyHead["Arrhythmia Branch"]
+        ArrhyPool["TaskTokenPooling"]
+        ArrhyMLP["MLPHead -> 5 logits\nNORM AFIB STACH PVC AFLT"]
+    end
+
+    Seq --> ArrhyPool
+    Global --> ArrhyMLP
+    ArrhyPool --> ArrhyMLP
+
+    subgraph GraphMI["Direction 2 MI Branch: Graph Transformer"]
+        Reshape["Reshape leads as nodes\n(B x 12 x 5000) -> (B*12 x 1 x 5000)"]
+        LeadCNN["Shared PerLeadEncoder\n1D CNN + AvgPool + MaxPool\n-> node_features (B*12 x 128)"]
+        Nodes["Lead nodes\n(B x 12 x 128)"]
+        LeadEmb["Learnable lead embeddings\n(B x 12 x 128)"]
+        GraphTF["Graph Transformer Encoder\n2 layers, 4 heads\nfull self-attention across 12 leads"]
+
+        IMINodes["Select IMI nodes\nII, III, aVF + I, aVL"]
+        ASMINodes["Select ASMI nodes\nV1, V2, V3, V4"]
+        IMIPool["TaskTokenPooling over 5 graph nodes\n-> imi_pooled (B x 128)"]
+        ASMIPool["TaskTokenPooling over 4 graph nodes\n-> asmi_pooled (B x 128)"]
+
+        IMITask["TaskTokenPooling IMI\nfrom sequence_features (B x 256)"]
+        ASMITask["TaskTokenPooling ASMI\nfrom sequence_features (B x 256)"]
+        IMIHead["IMI Head\nConcat shared + task_imi + imi_pooled\n640 -> 128 -> 1"]
+        ASMIHead["ASMI Head\nConcat shared + task_asmi + asmi_pooled\n640 -> 128 -> 1"]
+    end
+
+    Input --> Reshape --> LeadCNN --> Nodes
+    LeadEmb --> Nodes
+    Nodes --> GraphTF
+
+    GraphTF --> IMINodes --> IMIPool
+    GraphTF --> ASMINodes --> ASMIPool
+
+    Seq --> IMITask
+    Seq --> ASMITask
+    Global --> IMIHead
+    IMITask --> IMIHead
+    IMIPool --> IMIHead
+    Global --> ASMIHead
+    ASMITask --> ASMIHead
+    ASMIPool --> ASMIHead
+
+    IMIHead --> MILogits["MI logits\nIMI, ASMI"]
+    ASMIHead --> MILogits
+```
+
+**Key difference from ARCH-5 MI branch**: the old branch used separate `LeadGroupEncoder` modules for fixed anatomical groups. Direction 2 first converts all 12 leads into graph nodes, lets the nodes exchange information through full self-attention, and only then pools clinically relevant nodes for IMI and ASMI. This is a Graph Transformer implementation, not a fixed-adjacency GCN.
+
 ---
 
 ## 4. Calibration Parameter Analysis (Direction 2 - Graph Transformer)

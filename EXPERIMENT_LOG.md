@@ -311,6 +311,40 @@ Tuned on the Validation split to maximize F-beta scores, then applied at test ti
 
 ---
 
+## 5.5. Embedding Quality & Stability Analysis (Direction 1)
+
+To evaluate the effectiveness of the Supervised Contrastive Loss, we performed a post-hoc analysis on the trained embeddings and tracking the training stability across epochs.
+
+### Execution Commands
+```bash
+# 1. t-SNE & Cosine Distance Analysis
+python scripts/analyze_embedding_quality.py \
+  --dir checkpoints/run_20260605_114713_hybrid-tf-aug \
+  --config configs/experiments/final_e01_seed42.yaml \
+  --baseline-dir checkpoints/run_20260526_235533_hybrid-tf-aug \
+  --output results/embedding_analysis
+
+# 2. Training Stability Analysis
+python scripts/analyze_mi_stability.py \
+  --baseline-dir checkpoints/run_20260526_235533_hybrid-tf-aug \
+  --dir1-dir checkpoints/run_20260605_114713_hybrid-tf-aug \
+  --output results/stability_analysis
+```
+
+### Results & Interpretation
+
+| Output File | Content / Interpretation |
+| :--- | :--- |
+| `tsne_direction1.png` | **t-SNE visualization of the 128-d MI projection ($h$) from Direction 1.** <br> Shows how well the contrastive loss grouped MI samples. A good result will show clear clusters for IMI and ASMI, distinct from normal (neither) samples. |
+| `tsne_baseline.png` | **t-SNE visualization of raw MI logits from the Baseline model.** <br> Used for comparison to see if the contrastive loss (Direction 1) improved the separation of classes compared to standard BCE loss. |
+| `distance_comparison.png` | **Bar chart comparing Intra-class vs. Inter-class cosine distances.** <br> Quantifies cluster quality. The contrastive loss aims to minimize intra-class distance (pulling same-label samples together) while maximizing inter-class distance (pushing different-label samples apart). |
+| `embedding_stats.json` | **Raw numerical data** containing the exact cosine distances and separation ratios used to plot the bar chart. |
+| `imi_auprc_stability.png` <br> `asmi_auprc_stability.png` | **Line charts tracking AUPRC on Train and Val sets across epochs.** <br> Compares the Baseline vs. Direction 1. Used to verify if Contrastive Loss stabilizes the learning curve and prevents severe epoch-to-epoch fluctuations caused by Arrhythmia gradient interference. |
+| `mi_loss_stability.png` | **Line chart tracking the MI Branch Loss.** <br> Helps observe the convergence speed and smoothness of the MI branch when Contrastive Loss is active. |
+| `mi_grad_norm.png` | **Line chart of the Gradient Norm for the MI Head.** <br> Verifies that gradients flowing back from the Contrastive Loss are healthy (not vanishing or exploding) compared to the BCE-only baseline. |
+
+---
+
 ## 6. Cross-Dataset Validation Summary
 
 To verify model generalizability, the finalized backbone was tested on two independent datasets.

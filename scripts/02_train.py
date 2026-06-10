@@ -262,8 +262,10 @@ def plot_confusion_matrices(
     thresholds: dict,
     arrhy_label_names: list,
     mi_label_names: list,
+    cond_label_names: list,
     arrhy_indices: list,
     mi_indices: list,
+    cond_indices: list,
     run_dir: str,
     device,
 ):
@@ -272,8 +274,9 @@ def plot_confusion_matrices(
     one binary 2×2 confusion matrix per label.
 
     Layout:
-      Row 1: Arrhythmia labels (NORM, AFIB, STACH, SBRAD, AFLT)
-      Row 2: MI labels         (IMI, ASMI) + empty cells
+      Row 1: Arrhythmia labels
+      Row 2: MI labels
+      Row 3: Conduction labels
 
     Saved to run_dir/confusion_matrices.png
     """
@@ -291,6 +294,7 @@ def plot_confusion_matrices(
             # Collect arrhythmia scores
             a_score = torch.sigmoid(preds["arrhythmia"]).cpu()  # (B, K_arrhy)
             mi_score = torch.sigmoid(preds["mi"]).cpu()          # (B, K_mi)
+            cond_score = torch.sigmoid(preds.get("conduction", torch.zeros_like(mi_score))).cpu()
 
             # Full score vector in label order
             K_total = labels.shape[1]
@@ -299,6 +303,8 @@ def plot_confusion_matrices(
                 scores[:, idx] = a_score[:, j]
             for j, idx in enumerate(mi_indices):
                 scores[:, idx] = mi_score[:, j]
+            for j, idx in enumerate(cond_indices):
+                scores[:, idx] = cond_score[:, j]
 
             all_true.append(labels)
             all_score.append(scores)
@@ -311,22 +317,26 @@ def plot_confusion_matrices(
         (nm, idx, "arrhy") for nm, idx in zip(arrhy_label_names, arrhy_indices)
     ] + [
         (nm, idx, "mi")    for nm, idx in zip(mi_label_names,    mi_indices)
+    ] + [
+        (nm, idx, "cond")  for nm, idx in zip(cond_label_names,  cond_indices)
     ]
 
     n_arrhy = len(arrhy_label_names)
     n_mi    = len(mi_label_names)
-    n_cols  = max(n_arrhy, n_mi)
-    n_rows  = 2
+    n_cond  = len(cond_label_names)
+    n_cols  = max(n_arrhy, n_mi, n_cond)
+    n_rows  = 3 if n_cond > 0 else 2
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.5 * n_cols, 7))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.5 * n_cols, 3.5 * n_rows))
     fig.suptitle("Confusion Matrices (Test Set, per-class threshold)",
                  fontsize=13, fontweight="bold", y=1.01)
 
-    row_titles = ["Arrhythmia", "MI"]
+    row_titles = ["Arrhythmia", "MI", "Conduction"][:n_rows]
     groups     = [
         [(nm, idx) for nm, idx, g in label_info if g == "arrhy"],
         [(nm, idx) for nm, idx, g in label_info if g == "mi"],
-    ]
+        [(nm, idx) for nm, idx, g in label_info if g == "cond"],
+    ][:n_rows]
 
     for row_i, (row_title, group) in enumerate(zip(row_titles, groups)):
         for col_i in range(n_cols):
@@ -1081,8 +1091,10 @@ def main():
         thresholds   = thresholds,
         arrhy_label_names = trainer.arrhythmia_label_names,
         mi_label_names    = trainer.mi_label_names,
+        cond_label_names  = trainer.conduction_label_names,
         arrhy_indices     = trainer.arrhythmia_idx,
         mi_indices        = trainer.mi_idx,
+        cond_indices      = trainer.conduction_idx,
         run_dir      = cfg["paths"]["checkpoints"],
         device       = device,
     )

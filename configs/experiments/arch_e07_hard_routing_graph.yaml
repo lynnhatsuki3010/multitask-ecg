@@ -1,11 +1,11 @@
-# ARCH-E06: Multi-Branch Expert Architecture (v2)
-# Heterogeneous expert blocks + ConductionLeadGroupEncoder + updated CD labels
-# CD labels: LBBB (CLBBB+LAFB+ILBBB), RBBB (CRBBB), IRBBB, 1AVB
+# ARCH-E07: Hard-Routing Graph Architecture (DIR4)
+# MI and Conduction heads receive raw signal only — no shared features.
+# 13 labels: NORM + 4 Arrhy + 4 MI + 4 Conduction
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_baseline"
-  splits: "data/splits_baseline"
+  processed: "data/processed_dir4"
+  splits: "data/splits_dir4"
   checkpoints: "checkpoints"
 
 dataset:

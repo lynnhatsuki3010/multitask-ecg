@@ -12,7 +12,7 @@ from typing import List, Dict, Tuple, Optional
 # ─── Default configuration (Arrhythmia + MI + Conduction) ───────────────────
 DEFAULT_LABELS = [
     "NORM", "AFIB", "STACH", "PVC", "AFLT",
-    "IMI", "ASMI", "ILMI", "AMI",
+    "IMI", "ASMI",
     "LBBB", "RBBB", "IRBBB", "1AVB"
 ]
 
@@ -25,8 +25,6 @@ LABEL_TO_TASK = {
     "AFLT":  "arrhythmia",
     "IMI":   "mi",
     "ASMI":  "mi",
-    "ILMI":  "mi",
-    "AMI":   "mi",
     # Conduction — new grouped labels
     "LBBB":  "conduction",   # CLBBB + LAFB + ILBBB
     "RBBB":  "conduction",   # CRBBB (complete)
@@ -49,6 +47,9 @@ RHYTHM_STATEMENTS = {
 # ─── Label grouping: maps output label → list of SCP codes that trigger it ───
 # An output label is set to 1 if ANY of its source SCP codes is present.
 DEFAULT_LABEL_GROUPS: Dict[str, List[str]] = {
+    # Grouped MI labels
+    "ASMI":  ["ASMI", "AMI"],      # Merge Anterior into Anteroseptal
+    "IMI":   ["IMI", "ILMI"],      # Merge Inferolateral into Inferior
     # Grouped conduction labels (per reviewer's SNOMED-CT mapping)
     "LBBB":  ["CLBBB", "LAFB", "ILBBB"],  # Complete + Anterior Fascicular + Incomplete LBBB
     "RBBB":  ["CRBBB"],                    # Complete RBBB only

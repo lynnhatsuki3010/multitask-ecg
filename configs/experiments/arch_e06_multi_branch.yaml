@@ -4,8 +4,8 @@
 
 paths:
   raw_data: "data/raw/PTB-XL"
-  processed: "data/processed_baseline"
-  splits: "data/splits_baseline"
+  processed: "data/processed_dir4"
+  splits: "data/splits_dir4"
   checkpoints: "checkpoints"
 
 dataset:
@@ -87,6 +87,7 @@ preprocessing:
 
 model:
   architecture: multi_branch_transformer
+  routing_mode: soft
   d_model: 256
   stem_dim: 96
   downsample_factor: 20

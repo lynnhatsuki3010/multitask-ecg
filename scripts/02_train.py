@@ -48,9 +48,10 @@ from src.training.trainer import Trainer
 
 def plot_training_history(history: dict, run_dir: str, freeze_epoch: int = -1):
     """
-    Save training curves as a 2×3 PNG grid:
-      Row 1: Total Loss | Arrhy AUROC | MI AUROC
-      Row 2: IMI F1     | IMI AUPRC   | Gradient Norm ratio (MI/Backbone)
+    Save training curves as a 3x3 PNG grid:
+      Row 1: Total Loss     | Arrhy AUROC     | MI AUROC
+      Row 2: IMI F1         | IMI AUPRC       | MI Macro F1
+      Row 3: Cond AUROC     | Cond Macro F1   | Gradient Norm ratio (MI/Backbone)
 
     A vertical dashed line marks the Phase 2 boundary if freeze_epoch > 0.
     """
@@ -65,13 +66,22 @@ def plot_training_history(history: dict, run_dir: str, freeze_epoch: int = -1):
     def extract(records, key):
         return [r.get(key, float("nan")) for r in records]
 
+    def has_metric(records, key):
+        return any(not np.isnan(v) for v in extract(records, key))
+
+    def show_missing(ax, message):
+        ax.text(0.5, 0.5, message,
+                ha="center", va="center", transform=ax.transAxes,
+                fontsize=10, color="gray")
+        ax.axis("off")
+
     def add_phase_line(ax):
         """Draw vertical dashed line at phase 2 boundary."""
         if freeze_epoch > 0 and freeze_epoch <= len(epochs):
             ax.axvline(x=freeze_epoch, color="darkorange", linestyle="--",
                        linewidth=1.2, alpha=0.8, label=f"Phase 2 start (ep {freeze_epoch})")
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
     fig.suptitle("Training Curves", fontsize=14, fontweight="bold")
 
     # ── (0,0) Total Loss ─────────────────────────────────────────
@@ -138,8 +148,49 @@ def plot_training_history(history: dict, run_dir: str, freeze_epoch: int = -1):
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
 
-    # ── (1,2) Gradient Norm ratio MI/Backbone ────────────────────
+    # --- (1,2) MI Macro F1 ---------------------------------------
     ax = axes[1, 2]
+    ax.plot(epochs, extract(val_h, "f1/mi/macro"),
+            label="Val MI Macro F1", color="sienna")
+    add_phase_line(ax)
+    ax.set_title("MI Macro F1 (Val)")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("F1")
+    ax.set_ylim(0, 1.02)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    ax = axes[2, 0]
+    if has_metric(val_h, "auroc/cond/macro"):
+        ax.plot(epochs, extract(val_h, "auroc/cond/macro"),
+                label="Val Cond AUROC", color="teal")
+        ax.axhline(y=0.9, color="gray", linestyle=":", linewidth=0.8, label="0.90 target")
+        add_phase_line(ax)
+        ax.set_title("Conduction AUROC (Val)")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("AUROC")
+        ax.set_ylim(0, 1.02)
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+    else:
+        show_missing(ax, "No conduction AUROC data")
+
+    ax = axes[2, 1]
+    if has_metric(val_h, "f1/cond/macro"):
+        ax.plot(epochs, extract(val_h, "f1/cond/macro"),
+                label="Val Cond Macro F1", color="darkcyan")
+        add_phase_line(ax)
+        ax.set_title("Conduction Macro F1 (Val)")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("F1")
+        ax.set_ylim(0, 1.02)
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+    else:
+        show_missing(ax, "No conduction F1 data")
+
+    # --- (2,2) Gradient Norm ratio MI/Backbone --------------------
+    ax = axes[2, 2]
     gn_mi = extract(train_h, "grad_norm/mi") if train_h else []
     gn_bb = extract(train_h, "grad_norm/backbone") if train_h else []
     if gn_mi and any(not np.isnan(v) for v in gn_mi):
@@ -153,10 +204,7 @@ def plot_training_history(history: dict, run_dir: str, freeze_epoch: int = -1):
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
     else:
-        ax.text(0.5, 0.5, "No gradient norm data",
-                ha="center", va="center", transform=ax.transAxes,
-                fontsize=10, color="gray")
-        ax.axis("off")
+        show_missing(ax, "No gradient norm data")
 
     plt.tight_layout()
     out_path = os.path.join(run_dir, "training_curves.png")

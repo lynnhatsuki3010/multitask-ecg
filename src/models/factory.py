@@ -94,6 +94,8 @@ def build_model(
     hrv_enabled = bool(cfg.get("hrv", {}).get("enabled", True))
     mi_gradient_scale = float(model_cfg.get("mi_gradient_scale", 1.0))
 
+    routing_mode = str(model_cfg.get("routing_mode", "soft"))
+
     return ECGMultiTaskModel(
         backbone=backbone,
         num_arrhythmia_labels=num_arrhythmia_labels,
@@ -107,5 +109,6 @@ def build_model(
         hrv_detach=bool(model_cfg.get("hrv_detach", False)),
         mi_gradient_scale=mi_gradient_scale,
         use_cross_attention=use_cross_attention,
+        routing_mode=routing_mode,
     )
 

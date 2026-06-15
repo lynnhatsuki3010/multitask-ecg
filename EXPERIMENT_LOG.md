@@ -1,6 +1,48 @@
-# Experiment Log: Multi-Branch Transformer (DIR4)
+# Experiment Log: Decoupled Multi-Task ECG (DIR4)
 
-A deep learning project for 12-lead ECG analysis utilizing a Multi-Branch Transformer architecture with heterogeneous expert blocks and anatomy-aware lead group encoders.
+A deep learning project for 12-lead ECG analysis on PTB-XL. **Primary architecture: E10 (Fully Decoupled Multitask)** — three independent CNN+TF paths, no Shared CNN.
+
+## Primary Architecture — E10 (Production)
+
+| Item | Value |
+|------|-------|
+| **Config** | `configs/experiments/arch_e10_decoupled.yaml` |
+| **Checkpoint** | `run_20260614_004857_decoupled_multitask-aug` |
+| `architecture` | `decoupled_multitask` |
+| `routing_mode` | `decoupled` (auto-set by factory) |
+| **Backbone class** | `DecoupledMultiTaskBackbone` (`src/models/backbones.py`) |
+| **MI head class** | `DecoupledSubsetMIHead` (`src/models/ecg_multitask.py`) |
+| **Model wrapper** | `ECGMultiTaskModel` via `build_model()` (`src/models/factory.py`) |
+
+> **For architecture diagrams:** use the simple 3-branch diagram below. Code entry points: `DecoupledMultiTaskBackbone` (Arrhy + Cond paths) + `DecoupledSubsetMIHead` (MI path). Do **not** use `MultiBranchTransformerBackbone` — that is ablation A/B/C/D only.
+
+```text
+Input (B, 12, 5000)
+  │
+  ├── [Arrhythmia CNN (12L)] ──→ Arrhy Expert TF ×2 ──→ Arrhy Head (5 labels)
+  │
+  ├── [Conduction CNN (12L)] ──→ Cond Expert TF ×2 ──→ Cond Head (4 labels)
+  │                               + CDLGE raw [V1–V3 / V5,V6,I,aVL]
+  │
+  └── [MI — raw signal only]
+        Subset LeadGroupEncoder + Group TF ×1 per label ──→ 4 MI heads
+```
+
+### E10 Results (Test, Calibrated)
+
+Checkpoint: `run_20260614_004857_decoupled_multitask-aug` · `best_model` epoch 11 · monitor `imi_auprc`
+
+| Metric | E10 |
+|--------|-----|
+| **MI Macro F1** | **0.495** |
+| IMI F1 / AUPRC | 0.457 / 0.437 |
+| ASMI F1 | 0.757 |
+| ILMI F1 | **0.605** |
+| AMI F1 | **0.162** |
+| Arrhy Macro F1 | **0.777** |
+| Cond Macro F1 | 0.720 |
+
+---
 
 ## Supported Labels (13-class — no MI merging)
 
@@ -20,11 +62,11 @@ A deep learning project for 12-lead ECG analysis utilizing a Multi-Branch Transf
 | IRBBB | conduction | Incomplete Right Bundle Branch Block |
 | 1AVB  | conduction | First-degree Atrioventricular Block |
 
-> **Ablation A/B/C/E09** all use `processed_dir4` with **4 separate MI labels** (IMI, ASMI, ILMI, AMI). No label merging.
+> **Ablation A/B/C/D/E10** all use `processed_dir4` with **4 separate MI labels** (IMI, ASMI, ILMI, AMI). No label merging.
 
 ---
 
-## DIR4 Ablation Study: Routing Strategies (A / B / C / D)
+## DIR4 Ablation Study: Routing Strategies (A / B / C / D / E10)
 
 Fair comparison setup (identical across runs):
 - **Data:** `processed_dir4` / `splits_dir4` (13 labels)
@@ -38,34 +80,34 @@ Fair comparison setup (identical across runs):
 | **A** | `arch_e06_multi_branch.yaml` | `run_20260613_000218_multi_branch-tf-aug` | Baseline: soft routing + shared TF ×2 |
 | **B** | `arch_e08_separated_experts.yaml` | `run_20260612_170141_multi_branch-tf-aug` | **Approach 1:** soft routing + no shared TF |
 | **C** | `arch_e07_ablation_hard_graph_13L.yaml` | `run_20260613_081832_multi_branch-tf-aug` | Partial Approach 2 (hard graph 12L) |
-| **D** | `arch_e09_subset_lead_13L.yaml` | `run_20260613_182621_multi_branch-tf-aug` | **True Approach 2:** subset-lead routing |
+| **D** | `arch_e09_subset_lead_13L.yaml` | `run_20260613_182621_multi_branch-tf-aug` | Subset-lead + shared CNN fusion |
+| **E10** | `arch_e10_decoupled.yaml` | `run_20260614_004857_decoupled_multitask-aug` | **Fully decoupled:** no Shared CNN for MI |
 
 ### What Each Run Actually Separates
 
-> **Important:** None of A/B/C/D remove the **Shared CNN Front-End**. All four use `MultiBranchTransformerBackbone` with a single shared morphology CNN before expert branching.
+> **Important:** A/B/C/D share one **Shared CNN**. **E10 removes it entirely** — three fully independent paths from raw signal.
 
-| Component | A | B | C | D |
-|-----------|---|---|---|---|
-| **Shared CNN** | Yes (all tasks) | Yes | Yes (Arrhy only trains it) | **Yes (all tasks)** |
-| **Shared Transformer** | Yes (×2) | **No** | No | No |
-| **MI expert TF** | Yes, fused | Yes, fused | Dead | Yes, fused |
-| **Raw anatomy path** | Full LeadGroupEncoder | Full LeadGroupEncoder | PerLead 12L graph | **Subset LeadGroupEncoder + group TF** |
+| Component | A | B | C | D | **E10** |
+|-----------|---|---|---|---|---------|
+| **Shared CNN** | Yes (all tasks) | Yes | Yes (Arrhy trains it) | Yes (all tasks) | **No** |
+| **Shared Transformer** | Yes (×2) | No | No | No | No |
+| **MI expert TF** | Yes, fused | Yes, fused | Dead | Yes, fused | **None** |
+| **MI path** | LGE + expert fusion | Same as A | 12L hard graph | Subset LGE + expert fusion | **Subset LGE + Group TF only** |
+| **Arrhy / Cond CNN** | Shared | Shared | Shared | Shared | **Independent each** |
 
-**D does NOT drop shared CNN.** It only changes how the **raw-signal anatomy branch** encodes leads (subset groups with isolated group attention) while still fusing `mi_global + mi_seq` from the shared CNN → MI expert path.
-
-Only **C (hard_graph)** partially isolates MI from the backbone — MI/Cond ignore `mi_expert` output, but even C still **instantiates** the shared CNN (trained mainly by Arrhythmia).
+**D vs E10:** D still fuses `mi_expert` (Shared CNN) into every MI logit. E10 MI head uses **only** raw-signal subset encoders — no shared backbone gradient for MI.
 
 ### Key Config Differences
 
-| Setting | A (E06) | B (E08) | C (E07) | D (E09) |
-|---------|---------|---------|---------|---------|
-| `routing_mode` | `soft` | `soft` | `hard_graph` | `subset_lead` |
-| `num_shared_layers` | **2** | **0** | **0** | **0** |
-| `use_cross_attention` | true | true | true | **false** |
-| Shared CNN | **Yes** | **Yes** | **Yes** | **Yes** |
-| MI head | Expert + LeadGroupEncoder fusion | Same as A | PerLeadEncoder + GraphTransformer 12L | Subset LeadGroupEncoder + group TF + expert fusion |
-| Cond head | Expert + CDLGE fusion | Same as A | PerLeadEncoder + GraphTransformer 12L | Expert + CDLGE fusion (soft) |
-| MI expert receives gradient | Yes | Yes | **No (dead)** | Yes |
+| Setting | A (E06) | B (E08) | C (E07) | D (E09) | **E10** |
+|---------|---------|---------|---------|---------|---------|
+| `architecture` | `multi_branch_transformer` | same | same | same | **`decoupled_multitask`** |
+| `routing_mode` | `soft` | `soft` | `hard_graph` | `subset_lead` | **`decoupled`** |
+| `num_shared_layers` | **2** | **0** | **0** | **0** | N/A |
+| Shared CNN | Yes | Yes | Yes | Yes | **No** |
+| MI head | Expert + LGE fusion | Same as A | PerLead 12L graph | Subset LGE + expert fusion | **DecoupledSubsetMIHead** |
+| Cond head | Expert + CDLGE | Same as A | PerLead 12L graph | Expert + CDLGE | Expert + CDLGE (own CNN) |
+| MI expert gradient | Yes | Yes | No (dead) | Yes | **N/A (no mi_expert)** |
 
 ---
 
@@ -188,39 +230,45 @@ Input (B, 12, 5000)
 
 ---
 
+### Architecture E10 — Ablation Reference
+
+Same as **Primary Architecture** section above. Won ablation: MI Macro F1 0.495 vs B 0.458.
+
+---
+
 ## Ablation Results (Test Set, Calibrated)
 
 Post-hoc **Temperature Scaling** + **per-class threshold tuning** via `03_calibrate.py`.
 
-| Metric | A (E06) | B (E08) | C (E07 hard) | D (E09 subset) | Best |
-|--------|---------|---------|--------------|----------------|------|
-| **MI Macro F1** | 0.452 | **0.458** | 0.425 | 0.404 | B |
-| IMI F1 | 0.444 | **0.473** | 0.460 | 0.410 | B |
-| **IMI AUPRC** | **0.459** | 0.422 | 0.389 | 0.454 | A |
-| ASMI F1 | 0.724 | 0.742 | **0.771** | 0.717 | C |
-| ILMI F1 | **0.519** | 0.500 | 0.468 | 0.426 | A |
-| AMI F1 | **0.121** | 0.118 | 0.000 | 0.063 | A |
-| MI Macro AUROC | **0.949** | 0.945 | 0.939 | 0.943 | A |
-| **Cond Macro F1** | 0.711 | **0.731** | 0.599 | 0.699 | B |
-| Arrhy Macro F1 | 0.770 | 0.754 | **0.771** | 0.736 | C |
+| Metric | A (E06) | B (E08) | C (E07) | D (E09) | **E10** | Best |
+|--------|---------|---------|---------|---------|---------|------|
+| **MI Macro F1** | 0.452 | 0.458 | 0.425 | 0.404 | **0.495** | **E10** |
+| IMI F1 | 0.444 | **0.473** | 0.460 | 0.410 | 0.457 | B |
+| **IMI AUPRC** | **0.459** | 0.422 | 0.389 | 0.454 | 0.437 | A |
+| ASMI F1 | 0.724 | 0.742 | **0.771** | 0.717 | 0.757 | C |
+| ILMI F1 | **0.519** | 0.500 | 0.468 | 0.426 | **0.605** | **E10** |
+| AMI F1 | 0.121 | 0.118 | 0.000 | 0.063 | **0.162** | **E10** |
+| MI Macro AUROC | **0.949** | 0.945 | 0.939 | 0.943 | 0.934 | A |
+| **Cond Macro F1** | 0.711 | **0.731** | 0.599 | 0.699 | 0.720 | B |
+| Arrhy Macro F1 | 0.770 | 0.754 | **0.771** | 0.736 | **0.777** | **E10** |
 
 ### Per-class MI F1 (Calibrated)
 
-| Label | A | B | C | D |
-|-------|---|---|---|---|
-| IMI | 0.444 | **0.473** | 0.460 | 0.410 |
-| ASMI | 0.724 | 0.742 | **0.771** | 0.717 |
-| ILMI | **0.519** | 0.500 | 0.468 | 0.426 |
-| AMI | **0.121** | 0.118 | 0.000 | 0.063 |
+| Label | A | B | C | D | **E10** |
+|-------|---|---|---|---|---------|
+| IMI | 0.444 | **0.473** | 0.460 | 0.410 | 0.457 |
+| ASMI | 0.724 | 0.742 | **0.771** | 0.717 | 0.757 |
+| ILMI | **0.519** | 0.500 | 0.468 | 0.426 | **0.605** |
+| AMI | 0.121 | 0.118 | 0.000 | 0.063 | **0.162** |
 
 ### Per-class Conduction F1 (Calibrated)
 
-| Label | A | B | C | D |
-|-------|---|---|---|---|
-| LBBB | **0.820** | 0.794 | 0.774 | 0.792 |
-| RBBB | **0.832** | 0.833 | 0.770 | 0.828 |
-| IRBBB | 0.645 | **0.693** | 0.658 | 0.644 |
-| 1AVB | **0.547** | 0.605 | 0.195 | 0.532 |
+| Label | A | B | C | D | **E10** |
+|-------|---|---|---|---|---------|
+| LBBB | **0.820** | 0.794 | 0.774 | 0.792 | 0.813 |
+| RBBB | **0.832** | 0.833 | 0.770 | 0.828 | 0.857 |
+| IRBBB | 0.645 | **0.693** | 0.658 | 0.644 | 0.680 |
+| 1AVB | **0.547** | 0.605 | 0.195 | 0.532 | 0.529 |
 
 ---
 
@@ -243,23 +291,34 @@ Post-hoc **Temperature Scaling** + **per-class threshold tuning** via `03_calibr
    - Disabling cross-attention (vs A/B) and using shallow 1-layer group transformers may have reduced capacity.
    - 1AVB F1 (0.532) is the best among rare conduction classes across all runs.
 
-4. **Rare classes remain the bottleneck**
-   - AMI F1 ≤ 0.12 across A/B/D; C and D fail completely or near-zero (n=21 test samples).
-   - Architecture changes alone do not solve extreme class imbalance for AMI.
+4. **Rare classes — E10 breaks AMI plateau**
+   - AMI F1 ≤ 0.12 across A/B/D (n=21 test); C fails completely.
+   - **E10 AMI F1 = 0.162** (+37% vs B), AUPRC 0.149 vs 0.104 — first meaningful AMI detection.
+   - Still only ~3/21 recall; remains fragile but architecture change clearly helps.
 
 5. **Comparison to earlier E06 run (processed_baseline)**
    - Previous log reported MI Macro F1 **0.470** (calibrated) on `processed_baseline`.
    - Current A/B on `processed_dir4` with corrected lateral lead indices (V5/V6) score 0.452–0.458 — not directly comparable due to data path and code changes.
 
-6. **Recommended architecture: B (E08)**
-   - Best overall MI Macro F1 (0.458) and Conduction (0.731) in fair 13-label ablation.
-   - Approach 2 variants (C hard graph, D subset lead) did not outperform B.
+6. **E10 (decoupled) — current best architecture**
+   - Removing Shared CNN for MI eliminates gradient competition — **MI Macro F1 0.495** (+3.7pp vs B).
+   - ILMI +10.5pp, AMI +4.4pp vs B; trade-off IMI F1 −1.6pp, Cond −1.1pp.
+   - `best_model` saved at epoch 11 (`imi_auprc` monitor); epoch 15 had higher val AMI — room for checkpoint tuning.
+   - Validates advisor hypothesis: shared morphology CNN was the MI bottleneck, not just Shared Transformer.
+
+7. **Previous recommendation (B) superseded by E10** for MI-focused thesis.
 
 ### Common Pitfall: `hybrid_transformer` ≠ Approach 2
 
 Run `run_20260610_134808_hybrid-tf-aug` used `architecture: hybrid_transformer` with `num_shared_layers: 2` in the yaml — but **`num_shared_layers` is ignored** for hybrid; only `num_encoder_layers` applies. That run is **not** a valid E07 multi-branch test. If `MIHead` was hard-routed at the time, only Arrhythmia used the hybrid backbone; MI used PerLeadEncoder graph on raw signal (similar to C, not D).
 
-**Final ranking (MI Macro F1, calibrated):** B (0.458) > A (0.452) > C (0.425) > D (0.404)
+**Final ranking (MI Macro F1, calibrated):** **E10 (0.495)** > B (0.458) > A (0.452) > C (0.425) > D (0.404)
+
+---
+
+## E11 — MI Single-Task Ensemble (Pending)
+
+Train MI-only model (`arch_e11_mi_single_task.yaml`) and ensemble with E08/E10 via `scripts/04_ensemble_eval.py` — **not yet run**.
 
 ---
 
@@ -329,6 +388,17 @@ python scripts/02_train.py --config configs/experiments/arch_e07_ablation_hard_g
 # D — True Approach 2: subset-lead routing (E09)
 python scripts/02_train.py --config configs/experiments/arch_e09_subset_lead_13L.yaml
 
+# E10 — Fully decoupled CNN (no shared backbone)
+python scripts/02_train.py --config configs/experiments/arch_e10_decoupled.yaml
+
+# E11 — MI-only single task
+python scripts/02_train.py --config configs/experiments/arch_e11_mi_single_task.yaml
+
 # Calibrate after training (replace run folder name)
-python scripts/03_calibrate.py --dir checkpoints/run_YYYYMMDD_HHMMSS_multi_branch-tf-aug
+python scripts/03_calibrate.py --dir checkpoints/run_YYYYMMDD_HHMMSS_decoupled_multitask-aug
+
+# E11 ensemble (after MI-only training)
+python scripts/04_ensemble_eval.py `
+  --multitask-dir checkpoints/run_20260614_004857_decoupled_multitask-aug `
+  --mi-dir checkpoints/run_YYYYMMDD_mi_only-tf-aug
 ```

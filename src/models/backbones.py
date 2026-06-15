@@ -681,3 +681,121 @@ class MultiBranchTransformerBackbone(nn.Module):
         }
 
 
+class _DecoupledPath(nn.Module):
+    """Independent CNN front-end + expert Transformer (no shared weights)."""
+
+    def __init__(
+        self,
+        num_leads: int,
+        d_model: int,
+        stem_dim: int,
+        downsample_factor: int,
+        stage_dims: List[int],
+        nhead: int,
+        num_layers: int,
+        dim_feedforward: int,
+        dropout: float,
+        use_se: bool = False,
+        use_multi_scale: bool = False,
+    ) -> None:
+        super().__init__()
+        self.front_end = MorphologyConvFrontEnd(
+            num_leads=num_leads,
+            stem_dim=stem_dim,
+            stage_dims=stage_dims,
+            downsample_factor=downsample_factor,
+            dropout=dropout,
+            use_se=use_se,
+        )
+        self.use_multi_scale = use_multi_scale
+        if use_multi_scale:
+            self.multi_scale = MultiScaleTemporalBranch(stage_dims[-1], d_model, dropout=dropout)
+            self.sequence_proj = nn.Identity()
+        else:
+            self.sequence_proj = nn.Conv1d(stage_dims[-1], d_model, kernel_size=1, bias=False)
+        self.expert = _ExpertBranch(
+            d_model=d_model,
+            nhead=nhead,
+            num_layers=num_layers,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+        )
+
+    def _cnn_to_seq(self, x: torch.Tensor) -> torch.Tensor:
+        conv = self.front_end(x)
+        if self.use_multi_scale:
+            seq = self.multi_scale(conv)
+            return self.sequence_proj(seq).transpose(1, 2)
+        return self.sequence_proj(conv).transpose(1, 2)
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        return self.expert(self._cnn_to_seq(x))
+
+
+class DecoupledMultiTaskBackbone(nn.Module):
+    """E10: fully independent Arrhythmia and Conduction CNN+TF paths.
+
+    No shared CNN, no MI expert branch.  MI is handled entirely by the
+    decoupled subset-lead head on raw signal.
+    """
+
+    def __init__(
+        self,
+        num_leads: int = 12,
+        d_model: int = 256,
+        stem_dim: int = 96,
+        downsample_factor: int = 20,
+        stage_dims: List[int] | None = None,
+        nhead: int = 8,
+        num_expert_layers: int = 2,
+        dim_feedforward: int = 512,
+        dropout: float = 0.1,
+        use_se: bool = False,
+        use_multi_scale: bool = False,
+        arrhy_layers: int | None = None,
+        arrhy_nhead: int | None = None,
+        arrhy_ffn: int | None = None,
+        cond_layers: int | None = None,
+        cond_nhead: int | None = None,
+        cond_ffn: int | None = None,
+        cd_lead_out_dim: int = 128,
+    ) -> None:
+        super().__init__()
+        self.output_dim = d_model
+        stage_dims = stage_dims or [128, 192, d_model]
+
+        def _path(layers, e_nhead, e_ffn) -> _DecoupledPath:
+            return _DecoupledPath(
+                num_leads=num_leads,
+                d_model=d_model,
+                stem_dim=stem_dim,
+                downsample_factor=downsample_factor,
+                stage_dims=stage_dims,
+                nhead=e_nhead or nhead,
+                num_layers=layers or num_expert_layers,
+                dim_feedforward=e_ffn or dim_feedforward,
+                dropout=dropout,
+                use_se=use_se,
+                use_multi_scale=use_multi_scale,
+            )
+
+        self.arrhythmia_path = _path(arrhy_layers, arrhy_nhead, arrhy_ffn)
+        self.conduction_path = _path(cond_layers, cond_nhead, cond_ffn)
+        self.cd_lead_encoder = ConductionLeadGroupEncoder(out_dim=cd_lead_out_dim, dropout=dropout)
+        self.cd_lead_out_dim = cd_lead_out_dim
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        arrhy_out = self.arrhythmia_path(x)
+        cond_out  = self.conduction_path(x)
+        cd_lead_feats = self.cd_lead_encoder(x)
+        return {
+            "arrhy_global":    arrhy_out["global_features"],
+            "arrhy_seq":       arrhy_out["sequence_features"],
+            "cond_global":     cond_out["global_features"],
+            "cond_seq":        cond_out["sequence_features"],
+            "cond_lead_feats": cd_lead_feats,
+            "global_features":    arrhy_out["global_features"],
+            "sequence_features":  arrhy_out["sequence_features"],
+        }
+
+

@@ -304,10 +304,11 @@ class Trainer:
 
     def _split_labels(self, batch_labels: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Split the full label vector into per-task tensors."""
-        out = {
-            "arrhythmia": batch_labels[:, self.arrhythmia_idx],
-            "mi":         batch_labels[:, self.mi_idx],
-        }
+        out: Dict[str, torch.Tensor] = {}
+        if len(self.arrhythmia_idx) > 0:
+            out["arrhythmia"] = batch_labels[:, self.arrhythmia_idx]
+        if len(self.mi_idx) > 0:
+            out["mi"] = batch_labels[:, self.mi_idx]
         if len(self.conduction_idx) > 0:
             out["conduction"] = batch_labels[:, self.conduction_idx]
         return out
@@ -575,54 +576,58 @@ class Trainer:
                 targets = self._split_labels(labels)
 
                 import torch.nn.functional as F
-                a_scores.append(F.sigmoid(preds["arrhythmia"]).cpu().numpy())
-                a_trues.append(targets["arrhythmia"].cpu().numpy())
-                mi_scores.append(F.sigmoid(preds["mi"]).cpu().numpy())
-                mi_trues.append(targets["mi"].cpu().numpy())
+                if "arrhythmia" in preds and "arrhythmia" in targets:
+                    a_scores.append(F.sigmoid(preds["arrhythmia"]).cpu().numpy())
+                    a_trues.append(targets["arrhythmia"].cpu().numpy())
+                if "mi" in preds and "mi" in targets:
+                    mi_scores.append(F.sigmoid(preds["mi"]).cpu().numpy())
+                    mi_trues.append(targets["mi"].cpu().numpy())
                 if "conduction" in preds and "conduction" in targets:
                     cond_scores.append(F.sigmoid(preds["conduction"]).cpu().numpy())
                     cond_trues.append(targets["conduction"].cpu().numpy())
-
-        a_score = np.concatenate(a_scores)
-        a_true  = np.concatenate(a_trues)
-        mi_score = np.concatenate(mi_scores)
-        mi_true  = np.concatenate(mi_trues)
-        if cond_scores:
-            cond_score = np.concatenate(cond_scores)
-            cond_true  = np.concatenate(cond_trues)
 
         threshold_cfg = self.cfg.get("eval", {}).get("threshold_search", {})
         global_floor  = float(threshold_cfg.get("min_threshold", 0.1))
         rare_cap      = float(threshold_cfg.get("max_rare_threshold", 0.4))
         min_pos_count = int(threshold_cfg.get("min_pos_count", 20))
-        class_beta    = threshold_cfg.get("class_beta", {})   # e.g. {SBRAD: 2.0, IMI: 1.5}
-        arrhy_t = find_optimal_thresholds(
-            a_true,
-            a_score,
-            self.arrhythmia_label_names,
-            min_pos_count=min_pos_count,
-            max_rare_threshold=rare_cap,
-            min_threshold=global_floor,
-            class_beta=class_beta,
-            class_min_threshold=threshold_cfg.get("arrhythmia_min_threshold", {}),
-            class_min_precision=threshold_cfg.get("arrhythmia_min_precision", {}),
-            class_max_threshold=threshold_cfg.get("arrhythmia_max_threshold", {}),
-        )
-        mi_t = find_optimal_thresholds(
-            mi_true,
-            mi_score,
-            self.mi_label_names,
-            min_pos_count=min_pos_count,
-            max_rare_threshold=rare_cap,
-            min_threshold=global_floor,
-            class_beta=class_beta,
-            class_min_threshold=threshold_cfg.get("mi_min_threshold", {}),
-            class_min_precision=threshold_cfg.get("mi_min_precision", {}),
-            class_max_threshold=threshold_cfg.get("mi_max_threshold", {}),
-        )
+        class_beta    = threshold_cfg.get("class_beta", {})
 
-        thresholds = {**arrhy_t, **mi_t}
+        thresholds: Dict[str, float] = {}
+        if a_scores:
+            a_score = np.concatenate(a_scores)
+            a_true  = np.concatenate(a_trues)
+            arrhy_t = find_optimal_thresholds(
+                a_true,
+                a_score,
+                self.arrhythmia_label_names,
+                min_pos_count=min_pos_count,
+                max_rare_threshold=rare_cap,
+                min_threshold=global_floor,
+                class_beta=class_beta,
+                class_min_threshold=threshold_cfg.get("arrhythmia_min_threshold", {}),
+                class_min_precision=threshold_cfg.get("arrhythmia_min_precision", {}),
+                class_max_threshold=threshold_cfg.get("arrhythmia_max_threshold", {}),
+            )
+            thresholds.update(arrhy_t)
+        if mi_scores:
+            mi_score = np.concatenate(mi_scores)
+            mi_true  = np.concatenate(mi_trues)
+            mi_t = find_optimal_thresholds(
+                mi_true,
+                mi_score,
+                self.mi_label_names,
+                min_pos_count=min_pos_count,
+                max_rare_threshold=rare_cap,
+                min_threshold=global_floor,
+                class_beta=class_beta,
+                class_min_threshold=threshold_cfg.get("mi_min_threshold", {}),
+                class_min_precision=threshold_cfg.get("mi_min_precision", {}),
+                class_max_threshold=threshold_cfg.get("mi_max_threshold", {}),
+            )
+            thresholds.update(mi_t)
         if cond_scores:
+            cond_score = np.concatenate(cond_scores)
+            cond_true  = np.concatenate(cond_trues)
             cond_t = find_optimal_thresholds(
                 cond_true, cond_score, self.conduction_label_names,
                 min_pos_count=min_pos_count, max_rare_threshold=rare_cap,
@@ -687,10 +692,12 @@ class Trainer:
                     if k in loss_dict:
                         losses[k].append(float(loss_dict[k].item()))
 
-                a_scores.append(F.sigmoid(preds["arrhythmia"]).cpu().numpy())
-                a_trues.append(targets["arrhythmia"].cpu().numpy())
-                mi_scores.append(F.sigmoid(preds["mi"]).cpu().numpy())
-                mi_trues.append(targets["mi"].cpu().numpy())
+                if "arrhythmia" in preds and "arrhythmia" in targets:
+                    a_scores.append(F.sigmoid(preds["arrhythmia"]).cpu().numpy())
+                    a_trues.append(targets["arrhythmia"].cpu().numpy())
+                if "mi" in preds and "mi" in targets:
+                    mi_scores.append(F.sigmoid(preds["mi"]).cpu().numpy())
+                    mi_trues.append(targets["mi"].cpu().numpy())
                 if "conduction" in preds and "conduction" in targets:
                     cond_scores.append(F.sigmoid(preds["conduction"]).cpu().numpy())
                     cond_trues.append(targets["conduction"].cpu().numpy())
@@ -703,15 +710,17 @@ class Trainer:
             if v:
                 metrics[f"loss/{k}"] = float(np.mean(v))
 
-        a_score = np.concatenate(a_scores)
-        a_true  = np.concatenate(a_trues)
-        a_pred  = apply_thresholds(a_score, self.arrhythmia_label_names, thresholds)
-        metrics.update(compute_classification_metrics(a_true, a_score, a_pred, self.arrhythmia_label_names, prefix="arrhy/"))
+        if a_scores:
+            a_score = np.concatenate(a_scores)
+            a_true  = np.concatenate(a_trues)
+            a_pred  = apply_thresholds(a_score, self.arrhythmia_label_names, thresholds)
+            metrics.update(compute_classification_metrics(a_true, a_score, a_pred, self.arrhythmia_label_names, prefix="arrhy/"))
 
-        mi_score = np.concatenate(mi_scores)
-        mi_true  = np.concatenate(mi_trues)
-        mi_pred  = apply_thresholds(mi_score, self.mi_label_names, thresholds)
-        metrics.update(compute_classification_metrics(mi_true, mi_score, mi_pred, self.mi_label_names, prefix="mi/"))
+        if mi_scores:
+            mi_score = np.concatenate(mi_scores)
+            mi_true  = np.concatenate(mi_trues)
+            mi_pred  = apply_thresholds(mi_score, self.mi_label_names, thresholds)
+            metrics.update(compute_classification_metrics(mi_true, mi_score, mi_pred, self.mi_label_names, prefix="mi/"))
 
         if cond_scores:
             cond_score = np.concatenate(cond_scores)

@@ -222,23 +222,40 @@ class MultiTaskLoss(nn.Module):
         # targets being exactly 0 to correctly re-weight the positive class.
         if self.label_smoothing > 0.0:
             eps = self.label_smoothing
-            arrhy_targets = targets["arrhythmia"] * (1.0 - eps)
-            mi_targets    = targets["mi"]          * (1.0 - eps)
+            arrhy_targets = targets.get("arrhythmia")
+            mi_targets    = targets.get("mi")
             cond_targets  = targets.get("conduction", None)
+            if arrhy_targets is not None:
+                arrhy_targets = arrhy_targets * (1.0 - eps)
+            if mi_targets is not None:
+                mi_targets = mi_targets * (1.0 - eps)
             if cond_targets is not None:
                 cond_targets = cond_targets * (1.0 - eps)
         else:
-            arrhy_targets = targets["arrhythmia"]
-            mi_targets    = targets["mi"]
+            arrhy_targets = targets.get("arrhythmia")
+            mi_targets    = targets.get("mi")
             cond_targets  = targets.get("conduction", None)
 
+        device = next(iter(preds.values())).device
+        if arrhy_targets is None:
+            arrhy_targets = torch.zeros(0, device=device)
+        if mi_targets is None:
+            mi_targets = torch.zeros(0, device=device)
+
         # Arrhythmia loss
-        losses["arrhythmia"] = self.arrhythmia_loss_fn(
-            preds["arrhythmia"], arrhy_targets
-        )
+        if "arrhythmia" in preds and arrhy_targets.numel() > 0:
+            losses["arrhythmia"] = self.arrhythmia_loss_fn(
+                preds["arrhythmia"], arrhy_targets
+            )
+        else:
+            losses["arrhythmia"] = torch.tensor(0.0, device=device)
 
         # MI loss: keep IMI and ASMI separate so we can prioritize IMI
-        if preds["mi"].shape[1] == 2:
+        if "mi" not in preds:
+            losses["mi"] = torch.tensor(0.0, device=device)
+            losses["imi"] = losses["mi"]
+            losses["asmi"] = losses["mi"]
+        elif preds["mi"].shape[1] == 2:
             losses["imi"] = self.imi_loss_fn(
                 preds["mi"][:, 0],
                 mi_targets[:, 0],
@@ -271,9 +288,9 @@ class MultiTaskLoss(nn.Module):
                 losses["hrv"] = self.hrv_loss_fn(preds["hrv"], targets["hrv"])
             else:
                 # All samples invalid in this batch
-                losses["hrv"] = torch.tensor(0.0, device=preds["arrhythmia"].device)
+                losses["hrv"] = torch.tensor(0.0, device=device)
         else:
-            losses["hrv"] = torch.tensor(0.0, device=preds["arrhythmia"].device)
+            losses["hrv"] = torch.tensor(0.0, device=device)
 
         # Conduction loss
         if cond_targets is not None and "conduction" in preds:
@@ -281,14 +298,18 @@ class MultiTaskLoss(nn.Module):
                 preds["conduction"], cond_targets
             )
         else:
-            losses["conduction"] = torch.tensor(0.0, device=preds["arrhythmia"].device)
+            losses["conduction"] = torch.tensor(0.0, device=device)
 
         # Weighted total
-        losses["total"] = (
-            self.arrhythmia_weight * losses["arrhythmia"]
-            + self.mi_weight       * losses["mi"]
-            + self.conduction_weight * losses["conduction"]
-            + self.hrv_weight      * losses["hrv"]
-        )
+        total = torch.tensor(0.0, device=device)
+        if self.arrhythmia_weight > 0 and "arrhythmia" in preds:
+            total = total + self.arrhythmia_weight * losses["arrhythmia"]
+        if self.mi_weight > 0 and "mi" in preds:
+            total = total + self.mi_weight * losses["mi"]
+        if self.conduction_weight > 0 and "conduction" in preds:
+            total = total + self.conduction_weight * losses["conduction"]
+        if self.hrv_weight > 0:
+            total = total + self.hrv_weight * losses["hrv"]
+        losses["total"] = total
 
         return losses

@@ -263,20 +263,22 @@ class MetricsAccumulator:
         """Accumulate a batch."""
         with torch.no_grad():
             # Arrhythmia
-            a_score = torch.sigmoid(preds_raw["arrhythmia"]).cpu().numpy()
-            a_pred  = (a_score >= threshold).astype(float)
-            a_true  = targets["arrhythmia"].cpu().numpy()
-            self.arrhythmia_score.append(a_score)
-            self.arrhythmia_pred.append(a_pred)
-            self.arrhythmia_true.append(a_true)
+            if "arrhythmia" in preds_raw and "arrhythmia" in targets:
+                a_score = torch.sigmoid(preds_raw["arrhythmia"]).cpu().numpy()
+                a_pred  = (a_score >= threshold).astype(float)
+                a_true  = targets["arrhythmia"].cpu().numpy()
+                self.arrhythmia_score.append(a_score)
+                self.arrhythmia_pred.append(a_pred)
+                self.arrhythmia_true.append(a_true)
 
             # MI
-            mi_score = torch.sigmoid(preds_raw["mi"]).cpu().numpy()
-            mi_pred  = (mi_score >= threshold).astype(float)
-            mi_true  = targets["mi"].cpu().numpy()
-            self.mi_score.append(mi_score)
-            self.mi_pred.append(mi_pred)
-            self.mi_true.append(mi_true)
+            if "mi" in preds_raw and "mi" in targets:
+                mi_score = torch.sigmoid(preds_raw["mi"]).cpu().numpy()
+                mi_pred  = (mi_score >= threshold).astype(float)
+                mi_true  = targets["mi"].cpu().numpy()
+                self.mi_score.append(mi_score)
+                self.mi_pred.append(mi_pred)
+                self.mi_true.append(mi_true)
 
             # Conduction
             if "conduction" in preds_raw and "conduction" in targets:

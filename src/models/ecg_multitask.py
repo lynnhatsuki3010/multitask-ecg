@@ -13,7 +13,11 @@ from typing import Dict, List
 import torch
 import torch.nn as nn
 
-from src.models.backbones import AttentionPooling, MultiBranchTransformerBackbone
+from src.models.backbones import (
+    AttentionPooling,
+    DecoupledMultiTaskBackbone,
+    MultiBranchTransformerBackbone,
+)
 
 # PTB-XL 12-lead order: I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6
 # Indices:               0   1   2    3    4    5   6   7   8   9  10  11
@@ -330,6 +334,71 @@ class SubsetLeadMIHead(nn.Module):
         return torch.cat([imi, asmi, ilmi, ami], dim=-1)
 
 
+class DecoupledSubsetMIHead(nn.Module):
+    """E10/E11: subset LeadGroupEncoder + group TF only — no shared CNN expert fusion."""
+
+    def __init__(self, branch_dim: int, dropout: float) -> None:
+        super().__init__()
+        self.inferior_encoder   = LeadGroupEncoder(len(INFERIOR_LEADS),   branch_dim,      dropout)
+        self.reciprocal_encoder = LeadGroupEncoder(len(RECIPROCAL_LEADS), branch_dim // 2, dropout)
+        self.anterior_encoder   = LeadGroupEncoder(len(ANTERIOR_LEADS),   branch_dim,      dropout)
+        self.lateral_encoder    = LeadGroupEncoder(len(LATERAL_LEADS),    branch_dim,      dropout)
+        self.anterior6_encoder  = LeadGroupEncoder(len(ANTERIOR6_LEADS),  branch_dim,      dropout)
+        self.reciprocal_proj = nn.Linear(branch_dim // 2, branch_dim)
+
+        def _group_tf() -> nn.TransformerEncoder:
+            layer = nn.TransformerEncoderLayer(
+                d_model=branch_dim, nhead=4, dim_feedforward=branch_dim * 2,
+                dropout=dropout, batch_first=True, norm_first=True,
+            )
+            return nn.TransformerEncoder(layer, num_layers=1)
+
+        self.imi_group_tf  = _group_tf()
+        self.asmi_group_tf = _group_tf()
+        self.ilmi_group_tf = _group_tf()
+        self.ami_group_tf  = _group_tf()
+
+        self.imi_pool  = TaskTokenPooling(branch_dim, dropout)
+        self.asmi_pool = TaskTokenPooling(branch_dim, dropout)
+        self.ilmi_pool = TaskTokenPooling(branch_dim, dropout)
+        self.ami_pool  = TaskTokenPooling(branch_dim, dropout)
+
+        self.imi_head  = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
+        self.asmi_head = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
+        self.ilmi_head = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
+        self.ami_head  = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
+
+    def _group_nodes(
+        self,
+        inferior: torch.Tensor,
+        reciprocal: torch.Tensor,
+        lateral: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        rec = self.reciprocal_proj(reciprocal)
+        parts = [inferior.unsqueeze(1), rec.unsqueeze(1)]
+        if lateral is not None:
+            parts.append(lateral.unsqueeze(1))
+        return torch.cat(parts, dim=1)
+
+    def forward(self, signal: torch.Tensor) -> torch.Tensor:
+        inferior   = self.inferior_encoder(signal[:, INFERIOR_LEADS, :])
+        reciprocal = self.reciprocal_encoder(signal[:, RECIPROCAL_LEADS, :])
+        anterior   = self.anterior_encoder(signal[:, ANTERIOR_LEADS, :])
+        lateral    = self.lateral_encoder(signal[:, LATERAL_LEADS, :])
+        anterior6  = self.anterior6_encoder(signal[:, ANTERIOR6_LEADS, :])
+
+        imi_ctx  = self.imi_pool(self.imi_group_tf(self._group_nodes(inferior, reciprocal)))
+        ilmi_ctx = self.ilmi_pool(self.ilmi_group_tf(self._group_nodes(inferior, reciprocal, lateral)))
+        asmi_ctx = self.asmi_pool(self.asmi_group_tf(anterior.unsqueeze(1)))
+        ami_ctx  = self.ami_pool(self.ami_group_tf(anterior6.unsqueeze(1)))
+
+        imi  = self.imi_head(imi_ctx)
+        asmi = self.asmi_head(asmi_ctx)
+        ilmi = self.ilmi_head(ilmi_ctx)
+        ami  = self.ami_head(ami_ctx)
+        return torch.cat([imi, asmi, ilmi, ami], dim=-1)
+
+
 class HardRoutingMIHead(_GraphTransformerHead):
     """E07 hard-routing: raw signal graph, non-overlapping lead pools per label."""
 
@@ -460,7 +529,9 @@ class ECGMultiTaskModel(nn.Module):
         self.mi_gradient_scale = mi_gradient_scale
         self.routing_mode = routing_mode
         self._hard_routing = routing_mode == "hard_graph"
-        self._is_multi_branch = isinstance(backbone, MultiBranchTransformerBackbone)
+        self._decoupled = routing_mode == "decoupled"
+        self._is_multi_branch = isinstance(backbone, (MultiBranchTransformerBackbone, DecoupledMultiTaskBackbone))
+        self._has_mi = num_mi_labels > 0
         shared_dim = backbone.output_dim
 
         self.sequence_pool = AttentionPooling(shared_dim)
@@ -473,7 +544,7 @@ class ECGMultiTaskModel(nn.Module):
             dropout=dropout,
         )
         cd_lead_dim = 0
-        if isinstance(backbone, MultiBranchTransformerBackbone):
+        if isinstance(backbone, (MultiBranchTransformerBackbone, DecoupledMultiTaskBackbone)):
             cd_lead_dim = backbone.cd_lead_out_dim
 
         if routing_mode == "hard_graph":
@@ -482,6 +553,15 @@ class ECGMultiTaskModel(nn.Module):
                 dropout=dropout, use_cross_attention=use_cross_attention,
             )
             self.conduction_head = HardRoutingConductionHead(
+                shared_dim=shared_dim,
+                num_conduction_labels=num_conduction_labels,
+                hidden_dim=head_hidden_dim,
+                dropout=dropout,
+                cd_lead_dim=cd_lead_dim,
+            )
+        elif routing_mode == "decoupled":
+            self.mi_head = DecoupledSubsetMIHead(branch_dim=mi_branch_dim, dropout=dropout)
+            self.conduction_head = ConductionHead(
                 shared_dim=shared_dim,
                 num_conduction_labels=num_conduction_labels,
                 hidden_dim=head_hidden_dim,
@@ -530,15 +610,17 @@ class ECGMultiTaskModel(nn.Module):
         if self._is_multi_branch:
             arrhy_global = backbone_out["arrhy_global"]
             arrhy_seq    = backbone_out["arrhy_seq"]
-            mi_global    = backbone_out["mi_global"]
-            mi_seq       = backbone_out["mi_seq"]
             cond_global  = backbone_out["cond_global"]
             cond_seq     = backbone_out["cond_seq"]
 
             arrhythmia_tokens = self.arrhythmia_pool(arrhy_seq)
             rhythm_features   = torch.cat([arrhy_global, arrhythmia_tokens], dim=-1)
-            mi_shared         = mi_global + self.sequence_pool(mi_seq)
-            mi_seq_feats      = mi_seq
+
+            if not self._decoupled:
+                mi_global    = backbone_out["mi_global"]
+                mi_seq       = backbone_out["mi_seq"]
+                mi_shared    = mi_global + self.sequence_pool(mi_seq)
+                mi_seq_feats = mi_seq
         else:
             global_features   = backbone_out["global_features"]
             sequence_features = backbone_out["sequence_features"]
@@ -559,7 +641,13 @@ class ECGMultiTaskModel(nn.Module):
 
         cd_feats = backbone_out.get("cond_lead_feats") if self._is_multi_branch else None
 
-        if self._hard_routing:
+        if self._decoupled:
+            outputs = {
+                "arrhythmia": self.arrhythmia_head(rhythm_features),
+                "mi": self.mi_head(x),
+                "conduction": self.conduction_head(cond_global, cond_seq, cd_feats),
+            }
+        elif self._hard_routing:
             outputs = {
                 "arrhythmia": self.arrhythmia_head(rhythm_features),
                 "mi": self.mi_head(x, mi_shared, mi_seq_feats),
@@ -612,3 +700,21 @@ class ECGMultiTaskModel(nn.Module):
         if mode and getattr(self, "_phase2_active", False):
             self._apply_phase2_eval()
         return self
+
+
+class ECGMIModel(nn.Module):
+    """E11: MI-only single-task model — decoupled subset-lead head, no shared backbone."""
+
+    def __init__(
+        self,
+        num_mi_labels: int,
+        mi_branch_dim: int = 128,
+        dropout: float = 0.15,
+    ) -> None:
+        super().__init__()
+        if num_mi_labels != 4:
+            raise ValueError(f"ECGMIModel expects 4 MI labels, got {num_mi_labels}")
+        self.mi_head = DecoupledSubsetMIHead(branch_dim=mi_branch_dim, dropout=dropout)
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        return {"mi": self.mi_head(x)}

@@ -5,8 +5,13 @@ from __future__ import annotations
 
 from typing import List
 
-from src.models.backbones import CNNBackbone, HybridTransformerBackbone, MultiBranchTransformerBackbone
-from src.models.ecg_multitask import ECGMultiTaskModel
+from src.models.backbones import (
+    CNNBackbone,
+    DecoupledMultiTaskBackbone,
+    HybridTransformerBackbone,
+    MultiBranchTransformerBackbone,
+)
+from src.models.ecg_multitask import ECGMIModel, ECGMultiTaskModel
 
 
 def _parse_stage_dims(model_cfg: dict, d_model: int) -> List[int]:
@@ -71,7 +76,6 @@ def build_model(
             dropout=dropout,
             use_se=use_se,
             use_multi_scale=use_multi_scale,
-            # Per-expert heterogeneous configs (optional — fall back to defaults if absent)
             arrhy_layers=model_cfg.get("arrhy_layers"),
             arrhy_nhead=model_cfg.get("arrhy_nhead"),
             arrhy_ffn=model_cfg.get("arrhy_ffn"),
@@ -83,10 +87,39 @@ def build_model(
             cond_ffn=model_cfg.get("cond_ffn"),
             cd_lead_out_dim=int(model_cfg.get("cd_lead_out_dim", 128)),
         )
+    elif architecture == "decoupled_multitask":
+        backbone = DecoupledMultiTaskBackbone(
+            num_leads=cfg["dataset"]["num_leads"],
+            d_model=d_model,
+            stem_dim=stem_dim,
+            downsample_factor=downsample_factor,
+            stage_dims=_parse_stage_dims(model_cfg, d_model),
+            nhead=int(model_cfg.get("nhead", 8)),
+            num_expert_layers=int(model_cfg.get("num_expert_layers", 2)),
+            dim_feedforward=int(model_cfg.get("dim_feedforward", d_model * 2)),
+            dropout=dropout,
+            use_se=use_se,
+            use_multi_scale=use_multi_scale,
+            arrhy_layers=model_cfg.get("arrhy_layers"),
+            arrhy_nhead=model_cfg.get("arrhy_nhead"),
+            arrhy_ffn=model_cfg.get("arrhy_ffn"),
+            cond_layers=model_cfg.get("cond_layers"),
+            cond_nhead=model_cfg.get("cond_nhead"),
+            cond_ffn=model_cfg.get("cond_ffn"),
+            cd_lead_out_dim=int(model_cfg.get("cd_lead_out_dim", 128)),
+        )
+    elif architecture == "mi_only":
+        mi_branch_dim = int(model_cfg.get("mi_branch_dim", 128))
+        return ECGMIModel(
+            num_mi_labels=num_mi_labels,
+            mi_branch_dim=mi_branch_dim,
+            dropout=dropout,
+        )
     else:
         raise ValueError(
             f"Unsupported model.architecture='{architecture}'. "
-            "Use 'cnn', 'hybrid_transformer', or 'multi_branch_transformer'."
+            "Use 'cnn', 'hybrid_transformer', 'multi_branch_transformer', "
+            "'decoupled_multitask', or 'mi_only'."
         )
 
     head_hidden_dim = int(model_cfg.get("head_hidden_dim", d_model // 2))
@@ -95,6 +128,8 @@ def build_model(
     mi_gradient_scale = float(model_cfg.get("mi_gradient_scale", 1.0))
 
     routing_mode = str(model_cfg.get("routing_mode", "soft"))
+    if architecture == "decoupled_multitask":
+        routing_mode = "decoupled"
 
     return ECGMultiTaskModel(
         backbone=backbone,

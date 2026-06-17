@@ -1,0 +1,196 @@
+# BRANCHE10_06_ARR_CALIB: E10 branch optimization (arrhythmia track)
+# Parent: branche10_00_baseline
+# Matrix guide: configs/experiments/BRANCHE10_MATRIX.md
+#
+# Train:
+#   python scripts/02_train.py --config configs/experiments/branche10_06_arr_calib.yaml
+#
+paths:
+  raw_data: data/raw/PTB-XL
+  processed: data/processed_dir4
+  splits: data/splits_dir4
+  checkpoints: checkpoints
+dataset:
+  sampling_rate: 500
+  signal_length: 5000
+  num_leads: 12
+  label_threshold: 50
+  label_threshold_overrides:
+    IMI: 80
+  normal_label: NORM
+  normal_mode: exclusive
+  split_method: strat_fold
+  test_fold: 10
+  val_fold: 9
+  split_seed: 42
+  split_group_key: patient_id
+  split_train_ratio: 0.7
+  split_val_ratio: 0.15
+  split_test_ratio: 0.15
+  split_num_folds: 10
+  split_test_fold_index: 0
+  split_val_fold_index: null
+  split_stratify_label: null
+labels:
+- name: NORM
+  task: normal
+  index: 0
+- name: AFIB
+  task: arrhythmia
+  index: 1
+- name: STACH
+  task: arrhythmia
+  index: 2
+- name: PVC
+  task: arrhythmia
+  index: 3
+- name: AFLT
+  task: arrhythmia
+  index: 4
+- name: IMI
+  task: mi
+  index: 5
+- name: ASMI
+  task: mi
+  index: 6
+- name: ILMI
+  task: mi
+  index: 7
+- name: AMI
+  task: mi
+  index: 8
+- name: LBBB
+  task: conduction
+  index: 9
+- name: RBBB
+  task: conduction
+  index: 10
+- name: IRBBB
+  task: conduction
+  index: 11
+- name: 1AVB
+  task: conduction
+  index: 12
+label_groups:
+  arrhythmia:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  mi:
+  - 5
+  - 6
+  - 7
+  - 8
+  conduction:
+  - 9
+  - 10
+  - 11
+  - 12
+hrv:
+  enabled: false
+preprocessing:
+  bandpass_low: 0.5
+  bandpass_high: 40.0
+  notch_freq: 50.0
+  normalize: robust
+model:
+  architecture: decoupled_multitask
+  d_model: 256
+  stem_dim: 96
+  downsample_factor: 20
+  nhead: 8
+  num_expert_layers: 2
+  arrhy_layers: 2
+  arrhy_nhead: 8
+  arrhy_ffn: 512
+  cond_layers: 2
+  cond_nhead: 8
+  cond_ffn: 512
+  dim_feedforward: 512
+  cnn_stage_dims:
+  - 128
+  - 192
+  - 256
+  head_hidden_dim: 128
+  mi_branch_dim: 128
+  cd_lead_out_dim: 128
+  dropout: 0.15
+  hrv_detach: false
+  use_multi_scale: true
+  use_cross_attention: false
+augmentation:
+  aug_lead_dropout: true
+  aug_random_crop: false
+  aug_baseline_wander: false
+  aug_time_warp: false
+  aug_mixup: false
+  mixup_alpha: 0.2
+training:
+  batch_size: 96
+  epochs: 15
+  freeze_backbone_at_epoch: -1
+  lr: 0.0001
+  weight_decay: 0.001
+  mi_lr_multiplier: 1.0
+  scheduler: cosine
+  warmup_epochs: 2
+  loss_weights:
+    arrhythmia: 1.0
+    mi: 1.0
+    conduction: 1.0
+    imi: 1.0
+    asmi: 1.0
+    ilmi: 1.0
+    ami: 1.0
+    hrv: 0.0
+  label_smoothing: 0.0
+  hrv_loss: smooth_l1
+  use_pos_weight: false
+  use_focal: false
+  focal_gamma: 2.0
+  focal_alpha: 0.25
+  max_pos_weight: 30.0
+  pos_weight_power: 0.75
+  weighted_sampler: false
+  seed: 42
+  num_workers: 0
+  pin_memory: true
+  save_every: 5
+  early_stopping_patience: 15
+  monitor_metric: imi_auprc
+eval:
+  metrics:
+  - auroc
+  - auprc
+  - f1
+  - accuracy
+  threshold: 0.5
+  val_tune_thresholds_every: 1
+  threshold_search:
+    min_threshold: 0.15
+    min_pos_count: 20
+    max_rare_threshold: 0.4
+    class_beta:
+      PVC: 1.5
+      AFLT: 2.5
+      IMI: 1.5
+      ASMI: 1.2
+      ILMI: 1.5
+      AMI: 1.5
+      LBBB: 1.2
+      RBBB: 1.0
+      IRBBB: 1.0
+      1AVB: 1.0
+    arrhythmia_min_threshold:
+      PVC: 0.2
+      AFLT: 0.2
+    arrhythmia_max_threshold:
+      AFIB: 0.75
+      STACH: 0.8
+experiment:
+  id: branche10_06_arr_calib
+  track: arrhythmia
+  parent: branche10_00_baseline
+  matrix: BRANCHE10

@@ -760,8 +760,12 @@ def build_pos_weight_tensors(
     print(f"  MI pos_weights (clamped ≤{max_weight}):")
     for n, w in zip(mi_names, mi_pw.tolist()):
         print(f"    {n}: {w:.2f}")
+    if cond_names:
+        print(f"  Conduction pos_weights (clamped ≤{max_weight}):")
+        for n, w in zip(cond_names, cond_pw.tolist()):
+            print(f"    {n}: {w:.2f}")
 
-    return arrhy_pw, mi_pw
+    return arrhy_pw, mi_pw, cond_pw
 
 
 def normalize_hrv(
@@ -890,6 +894,9 @@ def main():
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         # Encode active flags in the folder name for quick identification
         tag_parts = []
+        exp_id = cfg.get("experiment", {}).get("id")
+        if exp_id:
+            tag_parts.append(exp_id)
         architecture = cfg.get("model", {}).get("architecture", "hybrid_transformer")
         tag_parts.append(architecture.replace("_transformer", "-tf"))
         if cfg["training"].get("use_focal"):        tag_parts.append("focal")

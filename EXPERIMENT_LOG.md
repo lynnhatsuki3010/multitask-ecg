@@ -322,6 +322,55 @@ Train MI-only model (`arch_e11_mi_single_task.yaml`) and ensemble with E08/E10 v
 
 ---
 
+## BRANCHE10 — Per-Branch Optimization Matrix (Pending)
+
+Sau E10, tối ưu từng nhánh độc lập (MI / Conduction / Arrhythmia) mà **không đổi kiến trúc decoupled**.
+
+**Hướng dẫn đầy đủ:** `configs/experiments/BRANCHE10_MATRIX.md`
+
+| ID | Config | Track | Thay đổi chính |
+|----|--------|-------|-----------------|
+| 00 | `branche10_00_baseline.yaml` | baseline | E10 gốc |
+| 01 | `branche10_01_mi_asl.yaml` | MI | ASL + pos_weight |
+| 02 | `branche10_02_mi_imi_weight.yaml` | MI | + `loss_weights.imi: 1.75` |
+| 03 | `branche10_03_mi_macro_select.yaml` | MI | + `mi_macro_f1_tuned` monitor |
+| 04 | `branche10_04_cond_lead_dim.yaml` | Conduction | `cd_lead_out_dim: 192` |
+| 05 | `branche10_05_cond_depth.yaml` | Conduction | + `cond_layers: 3` |
+| 06 | `branche10_06_arr_calib.yaml` | Arrhythmia | val threshold tune + arrhythmia constraints |
+
+Run folders có prefix `branche10_XX_*` (field `experiment.id`).
+
+```powershell
+# MI track (chạy tuần tự)
+python scripts/02_train.py --config configs/experiments/branche10_01_mi_asl.yaml
+python scripts/02_train.py --config configs/experiments/branche10_02_mi_imi_weight.yaml
+python scripts/02_train.py --config configs/experiments/branche10_03_mi_macro_select.yaml
+
+# Conduction track
+python scripts/02_train.py --config configs/experiments/branche10_04_cond_lead_dim.yaml
+python scripts/02_train.py --config configs/experiments/branche10_05_cond_depth.yaml
+
+# Arrhythmia track
+python scripts/02_train.py --config configs/experiments/branche10_06_arr_calib.yaml
+
+# So sánh sau khi train xong
+python scripts/compare_branche10_runs.py --glob "checkpoints/run_*_branche10_*" --out artifacts/branche10_comparison.md
+```
+
+### Results table (fill after runs)
+
+| Run | MI Macro F1 | IMI F1 | AMI F1 | Cond Macro F1 | Arrhy Macro F1 |
+|-----|-------------|--------|--------|---------------|----------------|
+| 00 baseline | | | | | |
+| 01 mi_asl | | | | | |
+| 02 mi_imi_weight | | | | | |
+| 03 mi_macro_select | | | | | |
+| 04 cond_lead_dim | | | | | |
+| 05 cond_depth | | | | | |
+| 06 arr_calib | | | | | |
+
+---
+
 ## Legacy: ARCH-E06 on processed_baseline (Historical Reference)
 
 *The section below documents an earlier E06 run on `processed_baseline` before the DIR4 ablation. Results are not directly comparable to A/B/C above.*

@@ -1047,6 +1047,8 @@ def main():
         conduction_weight     = lw.get("conduction", 1.0),
         imi_weight            = lw.get("imi",        1.0),
         asmi_weight           = lw.get("asmi",       1.0),
+        ilmi_weight           = lw.get("ilmi",       1.0),
+        ami_weight            = lw.get("ami",        1.0),
         hrv_weight            = lw.get("hrv",        0.1),
         hrv_enabled           = hrv_enabled,
         arrhythmia_pos_weight = arrhy_pw,

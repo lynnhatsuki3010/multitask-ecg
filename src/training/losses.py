@@ -112,6 +112,8 @@ class MultiTaskLoss(nn.Module):
         conduction_weight: float = 1.0,
         imi_weight: float = 1.0,
         asmi_weight: float = 1.0,
+        ilmi_weight: float = 1.0,
+        ami_weight: float = 1.0,
         hrv_weight: float = 0.1,
         hrv_enabled: bool = True,
         # ── Class imbalance tricks ──────────────────────────────────────────
@@ -135,6 +137,8 @@ class MultiTaskLoss(nn.Module):
         self.conduction_weight = conduction_weight
         self.imi_weight = imi_weight
         self.asmi_weight = asmi_weight
+        self.ilmi_weight = ilmi_weight
+        self.ami_weight = ami_weight
         self.hrv_weight = hrv_weight
         self.hrv_enabled = hrv_enabled
         self.label_smoothing = label_smoothing
@@ -146,56 +150,34 @@ class MultiTaskLoss(nn.Module):
         self.mi_pos_weight = mi_pos_weight
         self.conduction_pos_weight = conduction_pos_weight
 
-        if use_asl:
-            self.arrhythmia_loss_fn = AsymmetricLoss(
-                gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip,
-                pos_weight=arrhythmia_pos_weight,
-            )
-            self.mi_loss_fn = AsymmetricLoss(
-                gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip,
-                pos_weight=mi_pos_weight,
-            )
-            self.conduction_loss_fn = AsymmetricLoss(
-                gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip,
-                pos_weight=conduction_pos_weight,
-            )
-            imi_pw = mi_pos_weight[0:1] if mi_pos_weight is not None else None
-            asmi_pw = mi_pos_weight[1:2] if mi_pos_weight is not None else None
-            self.imi_loss_fn = AsymmetricLoss(gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip, pos_weight=imi_pw)
-            self.asmi_loss_fn = AsymmetricLoss(gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip, pos_weight=asmi_pw)
-        elif use_focal:
-            self.arrhythmia_loss_fn = BinaryFocalLoss(
-                gamma=focal_gamma, alpha=focal_alpha,
-                pos_weight=arrhythmia_pos_weight,
-            )
-            self.mi_loss_fn = BinaryFocalLoss(
-                gamma=focal_gamma, alpha=focal_alpha,
-                pos_weight=mi_pos_weight,
-            )
-            self.conduction_loss_fn = BinaryFocalLoss(
-                gamma=focal_gamma, alpha=focal_alpha,
-                pos_weight=conduction_pos_weight,
-            )
-            # Pre-built per-label focal losses for IMI/ASMI split path
-            imi_pw = mi_pos_weight[0:1] if mi_pos_weight is not None else None
-            asmi_pw = mi_pos_weight[1:2] if mi_pos_weight is not None else None
-            self.imi_loss_fn = BinaryFocalLoss(gamma=focal_gamma, alpha=focal_alpha, pos_weight=imi_pw)
-            self.asmi_loss_fn = BinaryFocalLoss(gamma=focal_gamma, alpha=focal_alpha, pos_weight=asmi_pw)
-        else:
-            self.arrhythmia_loss_fn = nn.BCEWithLogitsLoss(
-                pos_weight=arrhythmia_pos_weight
-            )
-            self.mi_loss_fn = nn.BCEWithLogitsLoss(
-                pos_weight=mi_pos_weight
-            )
-            self.conduction_loss_fn = nn.BCEWithLogitsLoss(
-                pos_weight=conduction_pos_weight
-            )
-            # Pre-built per-label BCE for IMI/ASMI split path
-            imi_pw = mi_pos_weight[0:1] if mi_pos_weight is not None else None
-            asmi_pw = mi_pos_weight[1:2] if mi_pos_weight is not None else None
-            self.imi_loss_fn = nn.BCEWithLogitsLoss(pos_weight=imi_pw)
-            self.asmi_loss_fn = nn.BCEWithLogitsLoss(pos_weight=asmi_pw)
+        def _make_loss(pos_weight: Optional[torch.Tensor]) -> nn.Module:
+            if use_asl:
+                return AsymmetricLoss(
+                    gamma_pos=asl_gamma_pos, gamma_neg=asl_gamma_neg, clip=asl_clip,
+                    pos_weight=pos_weight,
+                )
+            if use_focal:
+                return BinaryFocalLoss(
+                    gamma=focal_gamma, alpha=focal_alpha, pos_weight=pos_weight,
+                )
+            return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+        self.arrhythmia_loss_fn = _make_loss(arrhythmia_pos_weight)
+        self.mi_loss_fn = _make_loss(mi_pos_weight)
+        self.conduction_loss_fn = _make_loss(conduction_pos_weight)
+
+        # Pre-built per-label losses so each MI sub-label keeps its own pos_weight
+        # and can be re-weighted independently (split path for 2- and 4-label heads).
+        # MI column order is fixed as [IMI, ASMI, ILMI, AMI].
+        def _slice_pw(idx: int) -> Optional[torch.Tensor]:
+            if mi_pos_weight is None or idx >= mi_pos_weight.shape[0]:
+                return None
+            return mi_pos_weight[idx:idx + 1]
+
+        self.imi_loss_fn = _make_loss(_slice_pw(0))
+        self.asmi_loss_fn = _make_loss(_slice_pw(1))
+        self.ilmi_loss_fn = _make_loss(_slice_pw(2))
+        self.ami_loss_fn = _make_loss(_slice_pw(3))
 
         if hrv_loss_type == "mse":
             self.hrv_loss_fn = nn.MSELoss()
@@ -269,6 +251,26 @@ class MultiTaskLoss(nn.Module):
             losses["mi"] = (
                 self.imi_weight * losses["imi"]
                 + self.asmi_weight * losses["asmi"]
+            ) / mi_weight_sum
+        elif preds["mi"].shape[1] == 4:
+            # 4-label MI head: [IMI, ASMI, ILMI, AMI]. Compute per-label losses so
+            # each sub-label keeps its own pos_weight and can be re-weighted via
+            # loss_weights.{imi,asmi,ilmi,ami}.
+            losses["imi"]  = self.imi_loss_fn(preds["mi"][:, 0], mi_targets[:, 0])
+            losses["asmi"] = self.asmi_loss_fn(preds["mi"][:, 1], mi_targets[:, 1])
+            losses["ilmi"] = self.ilmi_loss_fn(preds["mi"][:, 2], mi_targets[:, 2])
+            losses["ami"]  = self.ami_loss_fn(preds["mi"][:, 3], mi_targets[:, 3])
+
+            mi_weight_sum = max(
+                self.imi_weight + self.asmi_weight
+                + self.ilmi_weight + self.ami_weight,
+                1e-8,
+            )
+            losses["mi"] = (
+                self.imi_weight * losses["imi"]
+                + self.asmi_weight * losses["asmi"]
+                + self.ilmi_weight * losses["ilmi"]
+                + self.ami_weight * losses["ami"]
             ) / mi_weight_sum
         else:
             losses["mi"] = self.mi_loss_fn(

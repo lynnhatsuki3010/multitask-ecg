@@ -145,5 +145,6 @@ def build_model(
         mi_gradient_scale=mi_gradient_scale,
         use_cross_attention=use_cross_attention,
         routing_mode=routing_mode,
+        mi_head_mode=str(model_cfg.get("mi_head_mode", "shared")),
     )
 

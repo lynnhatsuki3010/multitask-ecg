@@ -335,16 +335,23 @@ class SubsetLeadMIHead(nn.Module):
 
 
 class DecoupledSubsetMIHead(nn.Module):
-    """E10/E11: subset LeadGroupEncoder + group TF only — no shared CNN expert fusion."""
+    """E10/E11: subset LeadGroupEncoder + group TF only — no shared CNN expert fusion.
 
-    def __init__(self, branch_dim: int, dropout: float) -> None:
+    head_mode:
+      - "shared"   : E10 default. Per-label group transformers; IMI/ASMI never
+                     see the lateral leads, so the "narrow" siblings cannot learn
+                     to exclude their "extended" siblings (IMI vs ILMI, ASMI vs
+                     AMI) -> recall-heavy, precision-poor on overlapping anatomy.
+      - "contrast" : Phase 2. Encode each anatomical region once, run a shared
+                     region transformer, and let every label attend over the FULL
+                     region tokens (so IMI/ASMI also see the lateral leads). A
+                     sibling contrast refinement then pushes the paired logits
+                     apart (soft mutual exclusion). Only the MI branch changes.
+    """
+
+    def __init__(self, branch_dim: int, dropout: float, head_mode: str = "shared") -> None:
         super().__init__()
-        self.inferior_encoder   = LeadGroupEncoder(len(INFERIOR_LEADS),   branch_dim,      dropout)
-        self.reciprocal_encoder = LeadGroupEncoder(len(RECIPROCAL_LEADS), branch_dim // 2, dropout)
-        self.anterior_encoder   = LeadGroupEncoder(len(ANTERIOR_LEADS),   branch_dim,      dropout)
-        self.lateral_encoder    = LeadGroupEncoder(len(LATERAL_LEADS),    branch_dim,      dropout)
-        self.anterior6_encoder  = LeadGroupEncoder(len(ANTERIOR6_LEADS),  branch_dim,      dropout)
-        self.reciprocal_proj = nn.Linear(branch_dim // 2, branch_dim)
+        self.head_mode = head_mode
 
         def _group_tf() -> nn.TransformerEncoder:
             layer = nn.TransformerEncoderLayer(
@@ -352,11 +359,6 @@ class DecoupledSubsetMIHead(nn.Module):
                 dropout=dropout, batch_first=True, norm_first=True,
             )
             return nn.TransformerEncoder(layer, num_layers=1)
-
-        self.imi_group_tf  = _group_tf()
-        self.asmi_group_tf = _group_tf()
-        self.ilmi_group_tf = _group_tf()
-        self.ami_group_tf  = _group_tf()
 
         self.imi_pool  = TaskTokenPooling(branch_dim, dropout)
         self.asmi_pool = TaskTokenPooling(branch_dim, dropout)
@@ -367,6 +369,31 @@ class DecoupledSubsetMIHead(nn.Module):
         self.asmi_head = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
         self.ilmi_head = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
         self.ami_head  = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
+
+        if head_mode == "contrast":
+            # One encoder per anatomical region (encoded once, shared by siblings).
+            self.inferior_encoder   = LeadGroupEncoder(len(INFERIOR_LEADS),   branch_dim,      dropout)
+            self.reciprocal_encoder = LeadGroupEncoder(len(RECIPROCAL_LEADS), branch_dim // 2, dropout)
+            self.lateral_encoder    = LeadGroupEncoder(len(LATERAL_LEADS),    branch_dim,      dropout)
+            self.anterior_encoder   = LeadGroupEncoder(len(ANTERIOR_LEADS),   branch_dim,      dropout)
+            self.reciprocal_proj    = nn.Linear(branch_dim // 2, branch_dim)
+            # Shared region transformers over the full token set of each region.
+            self.inferior_region_tf = _group_tf()   # tokens: [inferior, reciprocal, lateral]
+            self.anterior_region_tf = _group_tf()    # tokens: [anterior(V1-V4), lateral(V5,V6)]
+            # Sibling contrast refinement (soft mutual exclusion within a region).
+            self.inf_contrast = nn.Linear(branch_dim, branch_dim)
+            self.ant_contrast = nn.Linear(branch_dim, branch_dim)
+        else:
+            self.inferior_encoder   = LeadGroupEncoder(len(INFERIOR_LEADS),   branch_dim,      dropout)
+            self.reciprocal_encoder = LeadGroupEncoder(len(RECIPROCAL_LEADS), branch_dim // 2, dropout)
+            self.anterior_encoder   = LeadGroupEncoder(len(ANTERIOR_LEADS),   branch_dim,      dropout)
+            self.lateral_encoder    = LeadGroupEncoder(len(LATERAL_LEADS),    branch_dim,      dropout)
+            self.anterior6_encoder  = LeadGroupEncoder(len(ANTERIOR6_LEADS),  branch_dim,      dropout)
+            self.reciprocal_proj = nn.Linear(branch_dim // 2, branch_dim)
+            self.imi_group_tf  = _group_tf()
+            self.asmi_group_tf = _group_tf()
+            self.ilmi_group_tf = _group_tf()
+            self.ami_group_tf  = _group_tf()
 
     def _group_nodes(
         self,
@@ -381,6 +408,11 @@ class DecoupledSubsetMIHead(nn.Module):
         return torch.cat(parts, dim=1)
 
     def forward(self, signal: torch.Tensor) -> torch.Tensor:
+        if self.head_mode == "contrast":
+            return self._forward_contrast(signal)
+        return self._forward_shared(signal)
+
+    def _forward_shared(self, signal: torch.Tensor) -> torch.Tensor:
         inferior   = self.inferior_encoder(signal[:, INFERIOR_LEADS, :])
         reciprocal = self.reciprocal_encoder(signal[:, RECIPROCAL_LEADS, :])
         anterior   = self.anterior_encoder(signal[:, ANTERIOR_LEADS, :])
@@ -396,6 +428,38 @@ class DecoupledSubsetMIHead(nn.Module):
         asmi = self.asmi_head(asmi_ctx)
         ilmi = self.ilmi_head(ilmi_ctx)
         ami  = self.ami_head(ami_ctx)
+        return torch.cat([imi, asmi, ilmi, ami], dim=-1)
+
+    def _forward_contrast(self, signal: torch.Tensor) -> torch.Tensor:
+        inferior   = self.inferior_encoder(signal[:, INFERIOR_LEADS, :])
+        reciprocal = self.reciprocal_proj(self.reciprocal_encoder(signal[:, RECIPROCAL_LEADS, :]))
+        lateral    = self.lateral_encoder(signal[:, LATERAL_LEADS, :])
+        anterior   = self.anterior_encoder(signal[:, ANTERIOR_LEADS, :])
+
+        # Inferior region tokens: [inferior, reciprocal, lateral]
+        inf_tokens = torch.stack([inferior, reciprocal, lateral], dim=1)
+        inf_tokens = self.inferior_region_tf(inf_tokens)
+        # Anterior region tokens: [anterior(V1-V4), lateral(V5,V6)] -> AMI = anterior + lateral
+        ant_tokens = torch.stack([anterior, lateral], dim=1)
+        ant_tokens = self.anterior_region_tf(ant_tokens)
+
+        # Each label attends over the full region tokens with its own query, so the
+        # "narrow" siblings (IMI, ASMI) also see the lateral leads.
+        imi_ctx  = self.imi_pool(inf_tokens)
+        ilmi_ctx = self.ilmi_pool(inf_tokens)
+        asmi_ctx = self.asmi_pool(ant_tokens)
+        ami_ctx  = self.ami_pool(ant_tokens)
+
+        # Sibling contrast refinement: emphasize the difference within each region.
+        imi_ref  = imi_ctx  + self.inf_contrast(imi_ctx  - ilmi_ctx)
+        ilmi_ref = ilmi_ctx + self.inf_contrast(ilmi_ctx - imi_ctx)
+        asmi_ref = asmi_ctx + self.ant_contrast(asmi_ctx - ami_ctx)
+        ami_ref  = ami_ctx  + self.ant_contrast(ami_ctx  - asmi_ctx)
+
+        imi  = self.imi_head(imi_ref)
+        asmi = self.asmi_head(asmi_ref)
+        ilmi = self.ilmi_head(ilmi_ref)
+        ami  = self.ami_head(ami_ref)
         return torch.cat([imi, asmi, ilmi, ami], dim=-1)
 
 
@@ -520,6 +584,7 @@ class ECGMultiTaskModel(nn.Module):
         mi_gradient_scale: float = 1.0,
         use_cross_attention: bool = False,
         routing_mode: str = "soft",
+        mi_head_mode: str = "shared",
     ) -> None:
         super().__init__()
 
@@ -560,7 +625,9 @@ class ECGMultiTaskModel(nn.Module):
                 cd_lead_dim=cd_lead_dim,
             )
         elif routing_mode == "decoupled":
-            self.mi_head = DecoupledSubsetMIHead(branch_dim=mi_branch_dim, dropout=dropout)
+            self.mi_head = DecoupledSubsetMIHead(
+                branch_dim=mi_branch_dim, dropout=dropout, head_mode=mi_head_mode,
+            )
             self.conduction_head = ConductionHead(
                 shared_dim=shared_dim,
                 num_conduction_labels=num_conduction_labels,

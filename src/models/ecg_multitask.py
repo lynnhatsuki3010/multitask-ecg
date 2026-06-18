@@ -334,20 +334,50 @@ class SubsetLeadMIHead(nn.Module):
         return torch.cat([imi, asmi, ilmi, ami], dim=-1)
 
 
+class SiblingContrast(nn.Module):
+    """Gated contrast refinement between two sibling labels.
+
+    out = x + gate * proj(x - sibling), where gate in [0,1] is learned per-feature
+    from [x, x - sibling]. proj is zero-initialised so the module starts as an
+    identity map and only ramps up contrast where it helps training — this avoids
+    the hard symmetric subtraction impoverishing the "extended" sibling.
+    """
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.gate = nn.Linear(2 * dim, dim)
+        self.proj = nn.Linear(dim, dim)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+        nn.init.constant_(self.gate.bias, -2.0)  # start with small gate (~0.12)
+
+    def forward(self, x: torch.Tensor, sibling: torch.Tensor) -> torch.Tensor:
+        delta = x - sibling
+        g = torch.sigmoid(self.gate(torch.cat([x, delta], dim=-1)))
+        return x + g * self.proj(delta)
+
+
 class DecoupledSubsetMIHead(nn.Module):
     """E10/E11: subset LeadGroupEncoder + group TF only — no shared CNN expert fusion.
 
     head_mode:
-      - "shared"   : E10 default. Per-label group transformers; IMI/ASMI never
-                     see the lateral leads, so the "narrow" siblings cannot learn
-                     to exclude their "extended" siblings (IMI vs ILMI, ASMI vs
-                     AMI) -> recall-heavy, precision-poor on overlapping anatomy.
-      - "contrast" : Phase 2. Encode each anatomical region once, run a shared
-                     region transformer, and let every label attend over the FULL
-                     region tokens (so IMI/ASMI also see the lateral leads). A
-                     sibling contrast refinement then pushes the paired logits
-                     apart (soft mutual exclusion). Only the MI branch changes.
+      - "shared"     : E10 default. Per-label group transformers; IMI/ASMI never
+                       see the lateral leads, so the "narrow" siblings cannot learn
+                       to exclude their "extended" siblings (IMI vs ILMI, ASMI vs
+                       AMI) -> recall-heavy, precision-poor on overlapping anatomy.
+      - "contrast"   : Phase 2. Encode each anatomical region once, run a shared
+                       region transformer, and let every label attend over the FULL
+                       region tokens (so IMI/ASMI also see the lateral leads). A
+                       symmetric sibling contrast refinement pushes the paired logits
+                       apart. Helped IMI but degraded the extended siblings
+                       (ILMI/AMI lost their dedicated joint encoding).
+      - "contrast_v2": Phase 2.1. Like "contrast" but (a) restores a dedicated joint
+                       encoder for each extended sibling (anterior6 V1-V6 for AMI,
+                       inferolateral for ILMI) as an extra region token, and (b) uses
+                       a gated contrast (identity at init) instead of hard subtraction.
     """
+
+    INFEROLATERAL_LEADS = INFERIOR_LEADS + RECIPROCAL_LEADS + LATERAL_LEADS
 
     def __init__(self, branch_dim: int, dropout: float, head_mode: str = "shared") -> None:
         super().__init__()
@@ -383,6 +413,20 @@ class DecoupledSubsetMIHead(nn.Module):
             # Sibling contrast refinement (soft mutual exclusion within a region).
             self.inf_contrast = nn.Linear(branch_dim, branch_dim)
             self.ant_contrast = nn.Linear(branch_dim, branch_dim)
+        elif head_mode == "contrast_v2":
+            self.inferior_encoder     = LeadGroupEncoder(len(INFERIOR_LEADS),         branch_dim,      dropout)
+            self.reciprocal_encoder   = LeadGroupEncoder(len(RECIPROCAL_LEADS),       branch_dim // 2, dropout)
+            self.lateral_encoder      = LeadGroupEncoder(len(LATERAL_LEADS),          branch_dim,      dropout)
+            self.anterior_encoder     = LeadGroupEncoder(len(ANTERIOR_LEADS),         branch_dim,      dropout)
+            self.reciprocal_proj      = nn.Linear(branch_dim // 2, branch_dim)
+            # Dedicated joint encoders for the extended siblings (restored from E10).
+            self.anterior6_encoder    = LeadGroupEncoder(len(ANTERIOR6_LEADS),        branch_dim,      dropout)
+            self.inferolateral_encoder = LeadGroupEncoder(len(self.INFEROLATERAL_LEADS), branch_dim,   dropout)
+            self.inferior_region_tf = _group_tf()   # tokens: [inferior, reciprocal, lateral, inferolateral]
+            self.anterior_region_tf = _group_tf()    # tokens: [anterior, lateral, anterior6]
+            # Gated contrast refinement (identity at init).
+            self.inf_contrast = SiblingContrast(branch_dim)
+            self.ant_contrast = SiblingContrast(branch_dim)
         else:
             self.inferior_encoder   = LeadGroupEncoder(len(INFERIOR_LEADS),   branch_dim,      dropout)
             self.reciprocal_encoder = LeadGroupEncoder(len(RECIPROCAL_LEADS), branch_dim // 2, dropout)
@@ -410,6 +454,8 @@ class DecoupledSubsetMIHead(nn.Module):
     def forward(self, signal: torch.Tensor) -> torch.Tensor:
         if self.head_mode == "contrast":
             return self._forward_contrast(signal)
+        if self.head_mode == "contrast_v2":
+            return self._forward_contrast_v2(signal)
         return self._forward_shared(signal)
 
     def _forward_shared(self, signal: torch.Tensor) -> torch.Tensor:
@@ -455,6 +501,37 @@ class DecoupledSubsetMIHead(nn.Module):
         ilmi_ref = ilmi_ctx + self.inf_contrast(ilmi_ctx - imi_ctx)
         asmi_ref = asmi_ctx + self.ant_contrast(asmi_ctx - ami_ctx)
         ami_ref  = ami_ctx  + self.ant_contrast(ami_ctx  - asmi_ctx)
+
+        imi  = self.imi_head(imi_ref)
+        asmi = self.asmi_head(asmi_ref)
+        ilmi = self.ilmi_head(ilmi_ref)
+        ami  = self.ami_head(ami_ref)
+        return torch.cat([imi, asmi, ilmi, ami], dim=-1)
+
+    def _forward_contrast_v2(self, signal: torch.Tensor) -> torch.Tensor:
+        inferior   = self.inferior_encoder(signal[:, INFERIOR_LEADS, :])
+        reciprocal = self.reciprocal_proj(self.reciprocal_encoder(signal[:, RECIPROCAL_LEADS, :]))
+        lateral    = self.lateral_encoder(signal[:, LATERAL_LEADS, :])
+        anterior   = self.anterior_encoder(signal[:, ANTERIOR_LEADS, :])
+        anterior6  = self.anterior6_encoder(signal[:, ANTERIOR6_LEADS, :])
+        inferolat  = self.inferolateral_encoder(signal[:, self.INFEROLATERAL_LEADS, :])
+
+        # Region tokens include a dedicated joint token for the extended sibling.
+        inf_tokens = torch.stack([inferior, reciprocal, lateral, inferolat], dim=1)
+        inf_tokens = self.inferior_region_tf(inf_tokens)
+        ant_tokens = torch.stack([anterior, lateral, anterior6], dim=1)
+        ant_tokens = self.anterior_region_tf(ant_tokens)
+
+        imi_ctx  = self.imi_pool(inf_tokens)
+        ilmi_ctx = self.ilmi_pool(inf_tokens)
+        asmi_ctx = self.asmi_pool(ant_tokens)
+        ami_ctx  = self.ami_pool(ant_tokens)
+
+        # Gated contrast (identity at init -> ramps up only where helpful).
+        imi_ref  = self.inf_contrast(imi_ctx,  ilmi_ctx)
+        ilmi_ref = self.inf_contrast(ilmi_ctx, imi_ctx)
+        asmi_ref = self.ant_contrast(asmi_ctx, ami_ctx)
+        ami_ref  = self.ant_contrast(ami_ctx,  asmi_ctx)
 
         imi  = self.imi_head(imi_ref)
         asmi = self.asmi_head(asmi_ref)

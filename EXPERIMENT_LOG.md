@@ -371,6 +371,65 @@ python scripts/compare_branche10_runs.py --glob "checkpoints/run_*_branche10_*" 
 
 ---
 
+## DIR5 — Bottleneck Resolution (MI / IMI focus)
+
+Branch `EXP-DIR5-BOTTLENECK-RESOLUTION`. Goal: lift MI (especially IMI) by
+attacking the diagnosed bottlenecks in order — per-label loss bug, calibration,
+MI-head sibling overlap, then label definition. Full matrix:
+`configs/experiments/DIR5_MATRIX.md`. All runs on `processed_dir4` (IMI:80)
+unless noted; decoupled E10 architecture.
+
+### Phase results (Test, calibrated)
+
+| Variant | MI Macro F1 | MI Macro AUPRC | IMI F1 | IMI AUPRC | IMI support |
+|---------|-------------|----------------|--------|-----------|-------------|
+| E10 baseline (IMI:80) | 0.498 | 0.477 | 0.437 | 0.437 | 103 |
+| P1 cheap levers (IMI:80) | 0.454 | 0.450 | 0.373 | 0.447 | 103 |
+| P2 `contrast` (IMI:80) | 0.469 | 0.468 | 0.490 | 0.480 | 103 |
+| P2.1 `contrast_v2` (IMI:80) | 0.494 | 0.476 | 0.464 | 0.460 | 103 |
+| **P3a `contrast_v2` + IMI:50** | **0.511** | **0.517** | **0.590** | **0.645** | **175** |
+
+### Findings
+
+1. **Phase 0 — per-label MI loss bug fixed.** `MultiTaskLoss` ignored
+   `loss_weights.{imi,asmi,ilmi,ami}` for the 4-label MI head (only the 2-label
+   path applied them). Now each MI sub-label keeps its own `pos_weight` and
+   weight; verified `loss/imi != loss/asmi`.
+
+2. **Phase 1 — cheap levers do NOT beat E10.** Weighted sampler + precision-aware
+   tuning (IMI beta=0.5 + min_precision) + heavy aug + `mi_macro_f1_tuned`
+   monitor: IMI precision rose (0.34->0.49) but recall collapsed (0.62->0.30);
+   MI macro F1 0.454 < E10 0.498. Crucially **AUPRC stayed flat** -> calibration
+   cannot raise separability; the ceiling is representational.
+
+3. **Phase 2 — `contrast` MI head: first real IMI separability gain.** Region-once
+   encoding + shared region TF (IMI/ASMI now see lateral leads) + sibling
+   contrast. **IMI AUPRC 0.437->0.480** (cheap levers could not). But it degraded
+   the extended siblings (ILMI/AMI lost dedicated joint encoding + hard
+   subtraction impoverished them) -> MI macro flat.
+
+4. **Phase 2.1 — `contrast_v2`: best MI head.** Restores dedicated joint encoders
+   (anterior6 for AMI, inferolateral for ILMI) + gated `SiblingContrast`
+   (identity at init). MI macro back to E10 parity (F1 0.494, AUPRC 0.476) while
+   keeping a clean IMI gain over E10 (AUPRC 0.460, F1 0.464) and best AMI.
+   ILMI is the residual loss (IMI<->ILMI share inferior region -> contrast is
+   zero-sum within the pair).
+
+5. **Phase 3a — IMI threshold 80->50: large IMI jump, but a label-definition
+   change.** IMI F1 0.464->0.590, AUPRC 0.460->0.645, MI macro F1 0.494->0.511.
+   **Caveat:** IMI test support changes 103->175 (adds borderline SCP-confidence
+   50-79 cases), so this is NOT the same task — AUPRC is sensitive to prevalence
+   and is not directly comparable across thresholds. The genuine signal: with
+   more positives IMI is far more learnable (F1 0.59, recall 0.77, precision
+   0.48). ASMI/ILMI/AMI are unchanged (same threshold), so the macro gain is
+   entirely from the relabelled IMI. Report both thresholds as a label ablation.
+
+**Recommended DIR5 config:** `contrast_v2` MI head + IMI:50
+(`dir5_p3a_imi50.yaml`). Configs: `dir5_p1_cheap_levers`, `dir5_p2_mi_contrast`,
+`dir5_p2b_mi_contrast_v2`, `dir5_p3a_imi50`.
+
+---
+
 ## Legacy: ARCH-E06 on processed_baseline (Historical Reference)
 
 *The section below documents an earlier E06 run on `processed_baseline` before the DIR4 ablation. Results are not directly comparable to A/B/C above.*

@@ -1,6 +1,13 @@
-# ECG Multi-Task Transformer (DIR4)
+# ECG Multi-Task Transformer (DIR4 / DIR5)
 
 A deep learning project for 12-lead ECG analysis on PTB-XL using a **Fully Decoupled Multitask** architecture (E10): three independent paths from raw signal — no Shared CNN.
+
+> **Current best (DIR5):** `contrast_v2` MI head + IMI label threshold 50.
+> - Config: `configs/experiments/dir5_p3a_imi50.yaml`
+> - Result folder: `checkpoints/run_20260618_233545_dir5_p3a_imi50-decoupled_multitask-aug`
+> - Dataset: `data/processed_dir5_imi50_500hz` / `data/splits_dir5_imi50_500hz` (IMI threshold 50, separate from the IMI:80 `processed_dir4`)
+> - Headline: **MI Macro F1 0.511**, **IMI F1 0.590**, **IMI AUPRC 0.645** (IMI test support 175).
+> - See `EXPERIMENT_LOG.md` (DIR5 section) and `configs/experiments/DIR5_MATRIX.md` for the full phase history.
 
 ## Directory Structure
 ```
@@ -40,9 +47,20 @@ python scripts/01_build_metadata.py --no-hrv
 python scripts/01_build_metadata.py --max-samples 100 --no-hrv
 ```
 
-### 2. Training (E10 — Primary Architecture)
+### 2. Training
+
+**DIR5 best (recommended): `contrast_v2` MI head + IMI:50**
 ```bash
-# Train E10 decoupled multitask (recommended)
+# 1) Build the IMI:50 dataset (separate dir; fast, signals read on-the-fly)
+python scripts/01_build_metadata.py --config configs/experiments/dir5_p3a_imi50.yaml
+# 2) Train
+python scripts/02_train.py --config configs/experiments/dir5_p3a_imi50.yaml
+# 3) Calibrate
+python scripts/03_calibrate.py --dir checkpoints/run_*_dir5_p3a_imi50*
+```
+
+**E10 baseline (IMI:80, original primary)**
+```bash
 python scripts/02_train.py --config configs/experiments/arch_e10_decoupled.yaml
 
 # Debug mode (200 samples, 3 epochs)
@@ -116,22 +134,39 @@ python scripts/03_calibrate.py --dir checkpoints/run_YYYYMMDD_decoupled_multitas
 
 Temperature scaling + per-class threshold tuning on validation set.
 
-## Evaluation Results (E10 — Calibrated)
+## Evaluation Results (Test, Calibrated)
 
-Checkpoint: `run_20260614_004857_decoupled_multitask-aug`
+Progression from the original multi-branch baseline (ARCH-E06) through E10 to the
+DIR5 best model. ARCH-E06 and E10 use IMI:80 (`processed_dir4`); the DIR5 best
+uses IMI:50 (`processed_dir5_imi50`).
 
-| Metric | E10 |
-|--------|-----|
-| **MI Macro F1** | **0.495** |
-| IMI F1 | 0.457 |
-| IMI AUPRC | 0.437 |
-| ASMI F1 | 0.757 |
-| ILMI F1 | 0.605 |
-| AMI F1 | 0.162 |
-| Arrhy Macro F1 | 0.777 |
-| Cond Macro F1 | 0.720 |
+| Metric | ARCH-E06 (baseline) | E10 (decoupled) | **DIR5 best (contrast_v2 + IMI:50)** |
+|--------|---------------------|-----------------|--------------------------------------|
+| **MI Macro F1** | 0.452 | 0.495 | **0.511** |
+| MI Macro AUPRC | — | 0.477 | **0.517** |
+| IMI F1 | 0.444 | 0.457 | **0.590** |
+| IMI AUPRC | 0.459 | 0.437 | **0.645** |
+| ASMI F1 | 0.724 | 0.757 | 0.736 |
+| ILMI F1 | 0.519 | **0.605** | 0.541 |
+| AMI F1 | 0.121 | 0.162 | 0.176 |
+| Arrhy Macro F1 | 0.770 | **0.777** | 0.720 |
+| Cond Macro F1 | 0.711 | 0.720 | 0.704 |
+| IMI test support | 103 | 103 | 175 |
 
-Ablation comparison (MI Macro F1): E10 (0.495) > B (0.458) > A (0.452) > C (0.425) > D (0.404). See `EXPERIMENT_LOG.md` for full ablation A/B/C/D.
+Run folders:
+- ARCH-E06: ablation `A` (see `EXPERIMENT_LOG.md`)
+- E10: `checkpoints/run_20260614_004857_decoupled_multitask-aug`
+- DIR5 best: `checkpoints/run_20260618_233545_dir5_p3a_imi50-decoupled_multitask-aug`
+
+> **Note on the IMI gain:** DIR5 lifts IMI via two stages — (1) the `contrast_v2`
+> MI head reduces IMI/ILMI and ASMI/AMI overlap (raises IMI AUPRC at IMI:80), and
+> (2) relaxing the IMI label threshold 80->50 adds borderline IMI positives
+> (test support 103->175). The threshold change is a **label-definition change**,
+> so IMI AUPRC is not directly comparable across thresholds (AUPRC is sensitive to
+> prevalence). Report both thresholds as a label ablation. Full DIR5 phase
+> breakdown (P0-P3a) is in `EXPERIMENT_LOG.md`.
+
+Earlier MI ablation (IMI:80, MI Macro F1): E10 (0.495) > B (0.458) > A/E06 (0.452) > C (0.425) > D (0.404).
 
 ## Outputs (checkpoints/)
 - `best_model.pth`: Best validation checkpoint (monitor metric).

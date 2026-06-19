@@ -208,6 +208,108 @@ def apply_thresholds(
     return y_pred
 
 
+def compute_micro_weighted_f1(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> Dict[str, float]:
+    """Micro- and support-weighted F1 over a task's label block (N, K)."""
+    return {
+        "micro": float(f1_score(y_true, y_pred, average="micro", zero_division=0)),
+        "weighted": float(f1_score(y_true, y_pred, average="weighted", zero_division=0)),
+    }
+
+
+def _bootstrap_ci_binary(
+    col_true: np.ndarray,
+    col_score: np.ndarray,
+    col_pred: np.ndarray,
+    metric: str,
+    n_boot: int,
+    alpha: float,
+    rng: np.random.Generator,
+) -> List[float]:
+    """Percentile bootstrap CI for a single binary class (resample samples)."""
+    n = len(col_true)
+    stats: List[float] = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        bt = col_true[idx]
+        s = bt.sum()
+        if s == 0 or s == len(bt):
+            continue
+        if metric == "f1":
+            stats.append(f1_score(bt, col_pred[idx], zero_division=0))
+        else:  # auprc
+            stats.append(average_precision_score(bt, col_score[idx]))
+    if not stats:
+        return [float("nan"), float("nan")]
+    lo = float(np.percentile(stats, 100 * alpha / 2))
+    hi = float(np.percentile(stats, 100 * (1 - alpha / 2)))
+    return [lo, hi]
+
+
+def class_performance_report(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    y_pred: np.ndarray,
+    label_names: List[str],
+    rare_threshold: int = 30,
+    n_boot: int = 1000,
+    ci_alpha: float = 0.05,
+    seed: int = 42,
+) -> Dict[str, Union[float, int, list, None]]:
+    """Per-class report split into common vs rare (support < rare_threshold),
+    with micro/weighted F1 and bootstrap CIs (F1 + AUPRC) for every class.
+
+    Bootstrap CIs are most informative for rare classes (wide intervals flag
+    statistically unreliable point estimates).
+    """
+    rng = np.random.default_rng(seed)
+    n = y_true.shape[0]
+    classes: List[dict] = []
+    common_f1: List[float] = []
+    rare_f1: List[float] = []
+
+    for i, name in enumerate(label_names):
+        col_true  = y_true[:, i]
+        col_score = y_score[:, i]
+        col_pred  = y_pred[:, i]
+        support = int(col_true.sum())
+        if support == 0 or support == n:
+            continue
+        is_rare = support < rare_threshold
+        f1   = float(f1_score(col_true, col_pred, zero_division=0))
+        prec = float(precision_score(col_true, col_pred, zero_division=0))
+        rec  = float(recall_score(col_true, col_pred, zero_division=0))
+        auprc = float(average_precision_score(col_true, col_score))
+        classes.append({
+            "label": name,
+            "support": support,
+            "rare": bool(is_rare),
+            "f1": f1,
+            "precision": prec,
+            "recall": rec,
+            "auprc": auprc,
+            "f1_ci95": _bootstrap_ci_binary(col_true, col_score, col_pred, "f1", n_boot, ci_alpha, rng),
+            "auprc_ci95": _bootstrap_ci_binary(col_true, col_score, col_pred, "auprc", n_boot, ci_alpha, rng),
+        })
+        (rare_f1 if is_rare else common_f1).append(f1)
+
+    mw = compute_micro_weighted_f1(y_true, y_pred)
+    return {
+        "classes": classes,
+        "macro_f1_common": float(np.mean(common_f1)) if common_f1 else None,
+        "macro_f1_rare": float(np.mean(rare_f1)) if rare_f1 else None,
+        "n_common": len(common_f1),
+        "n_rare": len(rare_f1),
+        "f1_micro": mw["micro"],
+        "f1_weighted": mw["weighted"],
+        "rare_threshold": rare_threshold,
+        "n_boot": n_boot,
+        "ci_alpha": ci_alpha,
+    }
+
+
 def compute_hrv_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,

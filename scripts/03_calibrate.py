@@ -32,6 +32,7 @@ from src.data.preprocessing import PTBXLDataset, collate_fn
 from src.utils.metrics import (
     compute_classification_metrics,
     find_optimal_thresholds,
+    class_performance_report,
 )
 
 
@@ -370,6 +371,29 @@ def main(checkpoint_dir: str):
     with open(save_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\n[OK] Saved calibration results -> {save_path}")
+
+    # ── Phase 4: common vs rare class report + micro/weighted-F1 + bootstrap CI
+    print("\n[+] Building class performance report (common vs rare, bootstrap CIs)...")
+    class_report = {
+        "arrhythmia": class_performance_report(test_ta.numpy(), test_probs_a, test_pred_a, arrhy_names),
+        "mi":         class_performance_report(test_tm.numpy(), test_probs_m, test_pred_m, mi_names),
+    }
+    if test_lc_s is not None:
+        class_report["conduction"] = class_performance_report(test_tc.numpy(), test_probs_c, test_pred_c, cond_names)
+
+    for task, rep in class_report.items():
+        print(f"  [{task}] micro-F1={rep['f1_micro']:.4f}  weighted-F1={rep['f1_weighted']:.4f}  "
+              f"macroF1 common={rep['macro_f1_common']}  rare={rep['macro_f1_rare']}")
+        for c in rep["classes"]:
+            if c["rare"]:
+                lo, hi = c["f1_ci95"]
+                print(f"      rare {c['label']:6s} n={c['support']:3d}  F1={c['f1']:.3f} "
+                      f"[{lo:.3f}, {hi:.3f}]")
+
+    report_path = os.path.join(checkpoint_dir, "class_report.json")
+    with open(report_path, "w") as f:
+        json.dump(class_report, f, indent=2)
+    print(f"[OK] Saved class report -> {report_path}")
 
 
 if __name__ == "__main__":

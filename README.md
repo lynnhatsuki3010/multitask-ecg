@@ -175,14 +175,75 @@ Earlier MI ablation (IMI:80, MI Macro F1): E10 (0.495) > B (0.458) > A/E06 (0.45
 - `test_metrics.json`: Final evaluation results.
 - `calibration_results.json`: Temperature values and per-class thresholds.
 
-## Cross-Dataset Validation
+## Cross-Dataset Validation (DIR5 best, decoupled)
 
-| Dataset | Setup | IMI AUROC | ASMI AUROC | IMI AUPRC |
-|---------|-------|-----------|------------|-----------|
-| Georgia | Zero-shot | 0.509 | — | — |
-| Georgia | Fine-tune (15 epochs) | 0.923 | 0.924 | 0.650 |
-| PTB     | Zero-shot | 0.501 | 0.628 | — |
-| PTB     | Fine-tune (15 epochs) | 0.848 | 0.915 | 0.865 |
+External validation of the DIR5 best model
+(`run_20260618_233545_dir5_p3a_imi50`) on two independent datasets:
+**PTB Diagnostic ECG** (direct IMI/ASMI labels) and **Georgia / PhysioNet 2020**
+(arrhythmia labels are real; MI labels are proxy-mapped from SNOMED, hence noisy).
+All external signals are re-preprocessed with the **same chain as training**
+(bandpass 0.5–40 Hz + 50 Hz notch + robust normalize). Reproduce with:
+
+```bash
+# Zero-shot (external test, whole dataset)
+python scripts/16_eval_zeroshot_decoupled.py --checkpoint checkpoints/run_20260618_233545_dir5_p3a_imi50-decoupled_multitask-aug/best_model.pth --dataset ptb     --split all
+python scripts/16_eval_zeroshot_decoupled.py --checkpoint checkpoints/run_20260618_233545_dir5_p3a_imi50-decoupled_multitask-aug/best_model.pth --dataset georgia --split all
+
+# Fine-tune MI head only, report on held-out test split
+python scripts/17_finetune_decoupled.py --checkpoint checkpoints/run_20260618_233545_dir5_p3a_imi50-decoupled_multitask-aug/best_model.pth --dataset ptb     --epochs 30 --lr 1e-3
+python scripts/17_finetune_decoupled.py --checkpoint checkpoints/run_20260618_233545_dir5_p3a_imi50-decoupled_multitask-aug/best_model.pth --dataset georgia --epochs 30 --lr 1e-3
+```
+
+### 1) Zero-shot (no adaptation, evaluated on the entire external dataset)
+
+**MI head** — threshold-free metrics (AUROC/AUPRC) are the fair comparison:
+
+| Dataset | Label | AUROC | AUPRC | F1@0.5 | Support |
+|---------|-------|------:|------:|-------:|--------:|
+| PTB     | ASMI  | **0.858** | 0.843 | 0.616 | 190 |
+| PTB     | IMI   | 0.499 | 0.452 | 0.000 | 192 |
+| Georgia | IMI   | 0.517 | 0.096 | 0.011 | 451 |
+| Georgia | ASMI  | 0.482 | 0.059 | 0.061 | 281 |
+
+**Arrhythmia head** — Georgia has real arrhythmia labels (PTB only has NORM):
+
+| Dataset | Label | AUROC | AUPRC | F1@0.5 | Support |
+|---------|-------|------:|------:|-------:|--------:|
+| Georgia | STACH | **0.989** | 0.977 | 0.911 | 1261 |
+| Georgia | NORM  | **0.955** | 0.940 | 0.875 | 1752 |
+| Georgia | AFIB  | **0.904** | 0.761 | 0.755 | 570 |
+| Georgia | AFLT  | 0.808 | 0.265 | 0.163 | 186 |
+| Georgia | PVC   | 0.770 | 0.520 | 0.533 | 395 |
+| PTB     | NORM  | 0.865 | 0.538 | 0.595 | 80 |
+
+### 2) Fine-tune (MI head only, ~8% of params; evaluated on held-out test split)
+
+Everything except the MI head is frozen; only IMI/ASMI columns are supervised
+(ILMI/AMI untouched). Arrow shows **zero-shot → fine-tuned** on the test split.
+
+| Dataset | Label | AUROC (zs→ft) | AUPRC (zs→ft) | F1 (zs→ft) | Support |
+|---------|-------|--------------:|--------------:|-----------:|--------:|
+| PTB     | IMI   | 0.520 → **0.868** | 0.495 → **0.887** | 0.000 → **0.764** | 27 |
+| PTB     | ASMI  | 0.839 → **0.928** | 0.860 → **0.922** | 0.474 → **0.816** | 28 |
+| Georgia | IMI   | 0.484 → **0.917** | 0.098 → **0.580** | 0.026 → **0.553** | 68 |
+| Georgia | ASMI  | 0.492 → **0.950** | 0.067 → **0.729** | 0.084 → **0.598** | 42 |
+
+> **Reading the results.** The **arrhythmia branch generalizes zero-shot**
+> (Georgia AUROC 0.77–0.99) — strong evidence of robustness across recording
+> sites. For **MI**, ASMI transfers when the target labels are clean (PTB ASMI
+> AUROC 0.86) but **IMI does not transfer zero-shot** (AUROC ≈ 0.50) and Georgia
+> MI is near-chance because its MI labels are proxy-mapped and rare. A light
+> **head-only fine-tune recovers MI dramatically on both datasets** (IMI AUROC
+> 0.52→0.87 on PTB, 0.48→0.92 on Georgia), showing the representation already
+> carries MI-relevant features and mainly needs domain re-calibration (gain /
+> acquisition differences). Zero-shot is reported as the primary generalization
+> evidence; fine-tune as the adaptation ceiling. Results saved as
+> `zeroshot_<ds>_all.json` (source checkpoint dir) and
+> `finetune_<ds>_decoupled/finetune_result.json`.
+
+> *Note:* zero-shot numbers in table (2) are on the small per-dataset **test
+> split** (used as the fine-tune baseline), while table (1) reports zero-shot on
+> the **entire** external dataset — hence minor differences in the same metric.
 
 ## Explainable AI (XAI)
 

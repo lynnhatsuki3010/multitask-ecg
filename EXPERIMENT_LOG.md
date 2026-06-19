@@ -428,6 +428,52 @@ unless noted; decoupled E10 architecture.
 (`dir5_p3a_imi50.yaml`). Configs: `dir5_p1_cheap_levers`, `dir5_p2_mi_contrast`,
 `dir5_p2b_mi_contrast_v2`, `dir5_p3a_imi50`.
 
+### Cross-dataset validation (DIR5 best, decoupled)
+
+External validation of `run_20260618_233545_dir5_p3a_imi50` on PTB (direct
+IMI/ASMI labels) and Georgia/PhysioNet-2020 (real arrhythmia labels; MI labels
+proxy-mapped, hence noisy + rare). External signals re-preprocessed with the
+training chain (bandpass 0.5–40 + 50 Hz notch + robust). New scripts:
+`scripts/16_eval_zeroshot_decoupled.py` (rebuilds the 4-MI-label decoupled model
+and slices IMI/ASMI columns) and `scripts/17_finetune_decoupled.py` (freezes all
+but the MI head; supervises only IMI/ASMI; reports on held-out test split).
+
+**Zero-shot (whole external dataset, no adaptation):**
+
+| Dataset | Label | AUROC | AUPRC | Support |
+|---------|-------|------:|------:|--------:|
+| PTB     | ASMI  | 0.858 | 0.843 | 190 |
+| PTB     | IMI   | 0.499 | 0.452 | 192 |
+| Georgia | IMI   | 0.517 | 0.096 | 451 |
+| Georgia | ASMI  | 0.482 | 0.059 | 281 |
+| Georgia | STACH | 0.989 | 0.977 | 1261 |
+| Georgia | NORM  | 0.955 | 0.940 | 1752 |
+| Georgia | AFIB  | 0.904 | 0.761 | 570 |
+| Georgia | AFLT  | 0.808 | 0.265 | 186 |
+| Georgia | PVC   | 0.770 | 0.520 | 395 |
+
+**Fine-tune MI head only (~8% of params, held-out test split, zs→ft):**
+
+| Dataset | Label | AUROC | AUPRC | F1 | Support |
+|---------|-------|------:|------:|---:|--------:|
+| PTB     | IMI   | 0.520→0.868 | 0.495→0.887 | 0.000→0.764 | 27 |
+| PTB     | ASMI  | 0.839→0.928 | 0.860→0.922 | 0.474→0.816 | 28 |
+| Georgia | IMI   | 0.484→0.917 | 0.098→0.580 | 0.026→0.553 | 68 |
+| Georgia | ASMI  | 0.492→0.950 | 0.067→0.729 | 0.084→0.598 | 42 |
+
+**Findings:**
+1. **Arrhythmia generalizes zero-shot** (Georgia AUROC 0.77–0.99) — strong
+   cross-site robustness with no adaptation.
+2. **MI zero-shot is label-quality dependent:** ASMI transfers on PTB (clean
+   labels, AUROC 0.86); IMI does not transfer zero-shot (AUROC ≈ 0.50); Georgia
+   MI is near-chance (proxy labels, very low prevalence).
+3. **Head-only fine-tune recovers MI dramatically** on both datasets (IMI AUROC
+   0.52→0.87 PTB, 0.48→0.92 Georgia), confirming the representation already
+   carries MI-relevant features and mostly needs domain re-calibration
+   (gain/acquisition shift). Report zero-shot as the generalization headline and
+   fine-tune as the adaptation ceiling. Artifacts: `zeroshot_<ds>_all.json`
+   (checkpoint dir) and `finetune_<ds>_decoupled/finetune_result.json`.
+
 ---
 
 ## Legacy: ARCH-E06 on processed_baseline (Historical Reference)

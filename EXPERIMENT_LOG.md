@@ -428,6 +428,42 @@ unless noted; decoupled E10 architecture.
 (`dir5_p3a_imi50.yaml`). Configs: `dir5_p1_cheap_levers`, `dir5_p2_mi_contrast`,
 `dir5_p2b_mi_contrast_v2`, `dir5_p3a_imi50`.
 
+### B10 track sweep on top of DIR5 best (Arrhythmia / Conduction)
+
+After settling the MI bottleneck with DIR5 (`contrast_v2` + IMI:50), the remaining
+BRANCHE10 configs were rebased onto the DIR5-best setup:
+
+- `branche10_04_cond_lead_dim`: increases conduction lead-group dimension
+  (`cd_lead_out_dim=192`), monitor `f1/cond/macro`.
+- `branche10_05_cond_depth`: adds conduction depth (`cond_layers=3`) on top of
+  B10-04.
+- `branche10_06_arr_calib`: arrhythmia threshold-search emphasis, monitor
+  `tuned/f1/arrhy/macro`.
+
+All numbers below are **test calibrated**.
+
+| Variant | Arrhy F1 | Arrhy AUPRC | Cond F1 | Cond AUPRC | MI F1 | MI AUPRC | IMI AUPRC |
+|---------|---------:|------------:|--------:|-----------:|------:|---------:|----------:|
+| DIR5 `p3a` | 0.728 | 0.768 | **0.708** | 0.725 | 0.496 | 0.517 | 0.645 |
+| B10-04 `cond_lead_dim` | **0.785** | **0.800** | 0.704 | 0.753 | 0.478 | 0.522 | 0.660 |
+| **B10-05 `cond_depth`** | 0.777 | 0.787 | 0.697 | **0.757** | **0.524** | **0.536** | **0.671** |
+| B10-06 `arr_calib` | 0.749 | 0.758 | 0.657 | 0.659 | 0.446 | 0.473 | 0.603 |
+
+**Decision:** choose **B10-05 `cond_depth`** as the current best balanced
+multitask checkpoint:
+`checkpoints/run_20260619_193427_branche10_05_cond_depth-decoupled_multitask-aug`.
+
+Rationale:
+1. Best overall MI after the DIR5 fix (macro F1 0.524, macro AUPRC 0.536, IMI
+   AUPRC 0.671), while keeping IMI support at 175.
+2. Best conduction separability (macro AUPRC 0.757), even though calibrated Cond
+   F1 is slightly lower than DIR5 (0.697 vs 0.708). The run remains threshold
+   tunable rather than representationally worse.
+3. Arrhythmia stays strong (macro F1 0.777), close to B10-04's highest arrhythmia
+   F1 (0.785) and clearly above DIR5 P3a.
+4. B10-06 does not justify adoption: it hurts MI and conduction and does not beat
+   B10-04/B10-05 on arrhythmia.
+
 ### Cross-dataset validation (DIR5 best, decoupled)
 
 External validation of `run_20260618_233545_dir5_p3a_imi50` on PTB (direct
@@ -437,6 +473,10 @@ training chain (bandpass 0.5–40 + 50 Hz notch + robust). New scripts:
 `scripts/16_eval_zeroshot_decoupled.py` (rebuilds the 4-MI-label decoupled model
 and slices IMI/ASMI columns) and `scripts/17_finetune_decoupled.py` (freezes all
 but the MI head; supervises only IMI/ASMI; reports on held-out test split).
+Georgia builder was later extended with conduction SNOMED mappings
+(`scripts/08_build_georgia.py`) and re-split using all available labels
+(`scripts/10_split_georgia.py`). `scripts/18_finetune_georgia_non_mi.py` freezes
+the model except arrhythmia/conduction heads.
 
 **Zero-shot (whole external dataset, no adaptation):**
 
@@ -461,6 +501,24 @@ but the MI head; supervises only IMI/ASMI; reports on held-out test split).
 | Georgia | IMI   | 0.484→0.917 | 0.098→0.580 | 0.026→0.553 | 68 |
 | Georgia | ASMI  | 0.492→0.950 | 0.067→0.729 | 0.084→0.598 | 42 |
 
+**Fine-tune Georgia non-MI heads (arrhythmia + conduction, held-out test split):**
+
+| Task | AUROC | AUPRC | F1@0.5 |
+|------|------:|------:|-------:|
+| Arrhythmia macro | 0.899→0.938 | 0.685→0.737 | 0.646→0.604 |
+| Conduction macro | 0.931→0.943 | 0.638→0.680 | 0.591→0.598 |
+
+Per-label highlights:
+
+| Task | Label | AUROC | AUPRC | F1 | Support |
+|------|-------|------:|------:|---:|--------:|
+| Arrhy | AFLT | 0.865→0.942 | 0.371→0.523 | 0.235→0.239 | 28 |
+| Arrhy | PVC  | 0.762→0.838 | 0.430→0.484 | 0.466→0.398 | 59 |
+| Cond  | LBBB | 0.960→0.972 | 0.670→0.728 | 0.554→0.607 | 62 |
+| Cond  | 1AVB | 0.931→0.952 | 0.646→0.752 | 0.598→0.650 | 115 |
+| Cond  | RBBB | 0.936→0.930 | 0.772→0.735 | 0.734→0.690 | 83 |
+| Cond  | IRBBB | 0.896→0.921 | 0.463→0.504 | 0.480→0.444 | 61 |
+
 **Findings:**
 1. **Arrhythmia generalizes zero-shot** (Georgia AUROC 0.77–0.99) — strong
    cross-site robustness with no adaptation.
@@ -473,6 +531,13 @@ but the MI head; supervises only IMI/ASMI; reports on held-out test split).
    (gain/acquisition shift). Report zero-shot as the generalization headline and
    fine-tune as the adaptation ceiling. Artifacts: `zeroshot_<ds>_all.json`
    (checkpoint dir) and `finetune_<ds>_decoupled/finetune_result.json`.
+4. **Non-MI Georgia fine-tune improves threshold-free metrics, but F1 still
+   needs calibration.** Arrhythmia AUROC/AUPRC improves (0.899→0.938 /
+   0.685→0.737), especially AFLT and PVC ranking, but macro F1@0.5 drops because
+   AFIB/STACH/PVC thresholds shift. Conduction improves more consistently
+   (macro AUROC 0.931→0.943, AUPRC 0.638→0.680, F1 0.591→0.598), with strongest
+   gains on LBBB and 1AVB. Next step if reporting these as final: run threshold
+   tuning/calibration on the Georgia validation split.
 
 ---
 

@@ -9,7 +9,33 @@ import os
 import sys
 import numpy as np
 import pandas as pd
-from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
+
+try:
+    from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
+except ModuleNotFoundError:
+    MultilabelStratifiedShuffleSplit = None
+
+
+def split_indices(X, Y, test_size, seed):
+    if MultilabelStratifiedShuffleSplit is not None:
+        splitter = MultilabelStratifiedShuffleSplit(
+            n_splits=1,
+            test_size=test_size,
+            random_state=seed,
+        )
+        return next(splitter.split(X, Y))
+
+    print(
+        "[WARN] Missing package 'iterative-stratification' (module 'iterstrat'). "
+        "Falling back to deterministic random split. For better multilabel balance, run: "
+        "python -m pip install iterative-stratification"
+    )
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(len(X))
+    n_test = int(round(len(X) * test_size))
+    test_idx = perm[:n_test]
+    train_idx = perm[n_test:]
+    return train_idx, test_idx
 
 def main():
     processed_dir = "data/processed_georgia"
@@ -19,19 +45,28 @@ def main():
     print(f"Loading labels from {processed_dir}/labels.csv...")
     df = pd.read_csv(os.path.join(processed_dir, "labels.csv"))
     
-    # We want to stratify by our 7 target labels
-    label_cols = ["NORM", "AFIB", "STACH", "PVC", "AFLT", "IMI", "ASMI"]
+    # Stratify by all available task labels. After rebuilding Georgia with
+    # scripts/08_build_georgia.py this includes conduction labels too.
+    preferred_cols = [
+        "NORM", "AFIB", "STACH", "PVC", "AFLT",
+        "IMI", "ASMI",
+        "LBBB", "RBBB", "IRBBB", "1AVB",
+    ]
+    label_cols = [col for col in preferred_cols if col in df.columns]
     Y = df[label_cols].values
     X = np.arange(len(df))
     
     # 1. Split off test (15%)
-    msss_test = MultilabelStratifiedShuffleSplit(n_splits=1, test_size=0.15, random_state=42)
-    train_val_idx, test_idx = next(msss_test.split(X, Y))
+    train_val_idx, test_idx = split_indices(X, Y, test_size=0.15, seed=42)
     
     # 2. Split remaining (85%) into train (70%) and val (15%)
     # 15 / 85 = 0.17647
-    msss_val = MultilabelStratifiedShuffleSplit(n_splits=1, test_size=0.17647, random_state=42)
-    train_idx_rel, val_idx_rel = next(msss_val.split(train_val_idx, Y[train_val_idx]))
+    train_idx_rel, val_idx_rel = split_indices(
+        train_val_idx,
+        Y[train_val_idx],
+        test_size=0.17647,
+        seed=42,
+    )
     
     train_idx = train_val_idx[train_idx_rel]
     val_idx = train_val_idx[val_idx_rel]

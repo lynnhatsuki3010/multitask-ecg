@@ -1,5 +1,5 @@
-# BRANCHE10_04_COND_LEAD_DIM: E10 branch optimization (conduction track)
-# Parent: branche10_00_baseline
+# BRANCHE10_04_COND_LEAD_DIM: DIR5-best branch optimization (conduction track)
+# Parent: dir5_p3a_imi50 (contrast_v2 + IMI:50)
 # Matrix guide: configs/experiments/BRANCHE10_MATRIX.md
 #
 # Train:
@@ -7,16 +7,15 @@
 #
 paths:
   raw_data: data/raw/PTB-XL
-  processed: data/processed_dir4
-  splits: data/splits_dir4
+  processed: data/processed_dir5_imi50
+  splits: data/splits_dir5_imi50
   checkpoints: checkpoints
 dataset:
   sampling_rate: 500
   signal_length: 5000
   num_leads: 12
   label_threshold: 50
-  label_threshold_overrides:
-    IMI: 80
+  label_threshold_overrides: {}
   normal_label: NORM
   normal_mode: exclusive
   split_method: strat_fold
@@ -115,6 +114,7 @@ model:
   - 256
   head_hidden_dim: 128
   mi_branch_dim: 128
+  mi_head_mode: contrast_v2
   cd_lead_out_dim: 192
   dropout: 0.15
   hrv_detach: false
@@ -159,7 +159,7 @@ training:
   pin_memory: true
   save_every: 5
   early_stopping_patience: 15
-  monitor_metric: imi_auprc
+  monitor_metric: f1/cond/macro
 eval:
   metrics:
   - auroc
@@ -186,5 +186,5 @@ eval:
 experiment:
   id: branche10_04_cond_lead_dim
   track: conduction
-  parent: branche10_00_baseline
+  parent: dir5_p3a_imi50
   matrix: BRANCHE10

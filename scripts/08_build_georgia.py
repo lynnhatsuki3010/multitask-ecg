@@ -5,7 +5,7 @@ import pandas as pd
 import scipy.io as sio
 from tqdm import tqdm
 
-# Mapping from SNOMED-CT to our 7 classes
+# Mapping from SNOMED-CT to our cross-dataset label set.
 # Lưu ý: Georgia KHÔNG CÓ nhãn IMI/ASMI cụ thể. Nó chỉ có 7 mẫu Myocardial Infarction (164865005).
 # Tuy nhiên, nó có nhãn Ischaemia (Thiếu máu cục bộ). Ta sẽ dùng Ischaemia làm Proxy (vật thế thân) cho Infarction.
 SNOMED_MAPPING = {
@@ -22,7 +22,24 @@ SNOMED_MAPPING = {
     # --- MI Head (PROXY MAPPING) ---
     "425419005": "IMI",   # Inferior Ischaemia -> Proxy cho Inferior Myocardial Infarction
     "426434006": "ASMI",  # Anterior Ischaemia -> Proxy cho Anteroseptal Myocardial Infarction
+
+    # --- Conduction Head ---
+    # Keep these aligned with src/data/label_builder.py:
+    # LBBB groups complete LBBB + left anterior fascicular block (PTB-XL uses LAFB in LBBB group).
+    "164909002": "LBBB",  # Left bundle branch block
+    "445118002": "LBBB",  # Left anterior fascicular block
+    # PhysioNet/CinC 2020 scores 713427006 (CRBBB) and 59118001 (RBBB) as the same diagnosis.
+    "59118001":  "RBBB",  # Right bundle branch block
+    "713427006": "RBBB",  # Complete right bundle branch block
+    "713426002": "IRBBB", # Incomplete right bundle branch block
+    "270492004": "1AVB",  # First-degree atrioventricular block
 }
+
+LABEL_COLUMNS = [
+    "NORM", "AFIB", "STACH", "PVC", "AFLT",
+    "IMI", "ASMI",
+    "LBBB", "RBBB", "IRBBB", "1AVB",
+]
 
 def load_hea_labels(hea_path):
     labels = set()
@@ -109,7 +126,7 @@ def build_georgia(raw_dir, output_dir):
             meta = {"ecg_id": ecg_id}
             meta["patient_id"] = ecg_id # Georgia doesn't specify patient ID, use ecg_id
             
-            for cls in ["NORM", "AFIB", "STACH", "PVC", "AFLT", "IMI", "ASMI"]:
+            for cls in LABEL_COLUMNS:
                 meta[cls] = 1 if cls in labels else 0
                 
             metadata.append(meta)
@@ -125,7 +142,7 @@ def build_georgia(raw_dir, output_dir):
     
     print(f"Build complete. Total samples kept: {len(df)}")
     print("Label distribution in processed Georgia dataset:")
-    print(df[["NORM", "AFIB", "STACH", "PVC", "AFLT", "IMI", "ASMI"]].sum())
+    print(df[LABEL_COLUMNS].sum())
 
 if __name__ == "__main__":
     raw_dir = r"e:\KLTN\KL Project\ECG_HRV\data\raw\Georgia"

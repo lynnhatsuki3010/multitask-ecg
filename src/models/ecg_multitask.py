@@ -28,6 +28,16 @@ ANTERIOR_LEADS   = [6, 7, 8, 9]       # V1–V4
 LATERAL_LEADS    = [10, 11]           # V5, V6
 ANTERIOR6_LEADS  = [6, 7, 8, 9, 10, 11]  # V1–V6
 
+# Clinical lead set per MI label — used as a soft anatomical prior for the
+# dynamic anatomical attention head (mi_head_mode="dyn_anat").
+MI_LABELS = ["imi", "asmi", "ilmi", "ami"]
+MI_LABEL_LEADS: Dict[str, List[int]] = {
+    "imi":  INFERIOR_LEADS + RECIPROCAL_LEADS,                       # II,III,aVF + I,aVL
+    "asmi": ANTERIOR_LEADS,                                          # V1–V4
+    "ilmi": INFERIOR_LEADS + RECIPROCAL_LEADS + LATERAL_LEADS,       # + V5,V6
+    "ami":  ANTERIOR6_LEADS,                                         # V1–V6
+}
+
 
 class MLPHead(nn.Module):
     def __init__(self, in_features: int, out_features: int, hidden_dim: int, dropout: float) -> None:
@@ -357,6 +367,196 @@ class SiblingContrast(nn.Module):
         return x + g * self.proj(delta)
 
 
+class SharedPerLeadEncoder(nn.Module):
+    """Weight-shared 1D CNN applied independently to each of the 12 leads.
+
+    Produces one token per lead: (B, 12, out_dim). Sharing weights across leads
+    keeps the parameter count low and lets the per-lead tokens live in a common
+    space so a downstream attention can compare them.
+    """
+
+    def __init__(self, out_dim: int, dropout: float) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=15, stride=4, padding=7, bias=False),
+            nn.BatchNorm1d(32),
+            nn.GELU(),
+            nn.Conv1d(32, 64, kernel_size=9, stride=2, padding=4, bias=False),
+            nn.BatchNorm1d(64),
+            nn.GELU(),
+            nn.Conv1d(64, out_dim, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm1d(out_dim),
+            nn.GELU(),
+        )
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.max_pool = nn.AdaptiveMaxPool1d(1)
+        self.proj = nn.Sequential(
+            nn.Linear(out_dim * 2, out_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, signal: torch.Tensor) -> torch.Tensor:
+        B, L, T = signal.size()
+        h = self.net(signal.reshape(B * L, 1, T))
+        avg = self.avg_pool(h).squeeze(-1)
+        mx = self.max_pool(h).squeeze(-1)
+        tok = self.proj(torch.cat([avg, mx], dim=-1))
+        return tok.view(B, L, -1)
+
+
+class DynamicAnatomicalAttention(nn.Module):
+    """Per-patient dynamic attention over the 12 leads with a soft anatomical prior.
+
+    Motivation. Fixed anatomical grouping (contrast_v2) always reads the same lead
+    set for a label. Clinically, the diagnostic leads shift per patient: an inferior
+    MI shows ST elevation in II/III/aVF, so attention there should rise, whereas an
+    atypical/lateral extension should let V5/V6 or reciprocal leads speak up.
+
+    Design. Each of the 12 leads is encoded independently (SharedPerLeadEncoder) and
+    contextualised by a 1-layer transformer so leads can "see" each other (reciprocal
+    changes). Each MI label owns a learnable query and an additive per-lead bias
+    initialised from its clinical anatomy. Attention weights depend on the *content*
+    of each lead token — hence adapt per patient — while the anatomical bias keeps the
+    focus clinically grounded and lets off-group leads be up-weighted only when the
+    signal supports it. The bias is learnable, so the prior is a starting point, not
+    a hard mask.
+    """
+
+    NUM_LEADS = 12
+
+    def __init__(self, dim: int, dropout: float, nhead: int = 4, prior_strength: float = 2.0) -> None:
+        super().__init__()
+        if dim % nhead != 0:
+            raise ValueError(f"dim ({dim}) must be divisible by nhead ({nhead})")
+        self.dim = dim
+        self.nhead = nhead
+        self.head_dim = dim // nhead
+
+        self.lead_encoder = SharedPerLeadEncoder(dim, dropout)
+        self.lead_pos = nn.Parameter(torch.randn(1, self.NUM_LEADS, dim) * 0.02)
+        layer = nn.TransformerEncoderLayer(
+            d_model=dim, nhead=nhead, dim_feedforward=dim * 2,
+            dropout=dropout, batch_first=True, norm_first=True,
+        )
+        self.lead_context_tf = nn.TransformerEncoder(layer, num_layers=1)
+
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.query = nn.ParameterDict(
+            {lbl: nn.Parameter(torch.randn(dim) * 0.02) for lbl in MI_LABELS}
+        )
+        self.out_proj = nn.ModuleDict({lbl: nn.Linear(dim, dim) for lbl in MI_LABELS})
+        self.attn_dropout = nn.Dropout(dropout)
+
+        lead_bias = {}
+        for lbl in MI_LABELS:
+            b = torch.zeros(self.NUM_LEADS)
+            for l in MI_LABEL_LEADS[lbl]:
+                b[l] = prior_strength
+            lead_bias[lbl] = nn.Parameter(b)
+        self.lead_bias = nn.ParameterDict(lead_bias)
+
+    def _attend(self, lbl: str, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        # k, v: (B, L, nhead, head_dim)
+        B = k.size(0)
+        q = self.query[lbl].view(self.nhead, self.head_dim)                     # (H, hd)
+        scores = torch.einsum("blhd,hd->bhl", k, q) / (self.head_dim ** 0.5)    # (B, H, L)
+        scores = scores + self.lead_bias[lbl].view(1, 1, -1)                    # anatomical prior
+        weights = self.attn_dropout(torch.softmax(scores, dim=-1))             # (B, H, L)
+        ctx = torch.einsum("bhl,blhd->bhd", weights, v).reshape(B, self.dim)    # (B, dim)
+        return self.out_proj[lbl](ctx)
+
+    def forward(self, signal: torch.Tensor):
+        tokens = self.lead_encoder(signal) + self.lead_pos                      # (B, 12, dim)
+        tokens = self.lead_context_tf(tokens)
+        B, L, _ = tokens.size()
+        k = self.k_proj(tokens).view(B, L, self.nhead, self.head_dim)
+        v = self.v_proj(tokens).view(B, L, self.nhead, self.head_dim)
+        return tuple(self._attend(lbl, k, v) for lbl in MI_LABELS)
+
+
+class DynamicLeadAttention(nn.Module):
+    """Per-patient, per-lead attention producing a GATED ADDITIVE feature per MI label.
+
+    Unlike DynamicAnatomicalAttention (which replaces the anatomy encoders), this
+    module is meant to be *added on top of* the contrast_v2 joint region encoders:
+    the joint cross-lead morphology is preserved, and this branch only injects a
+    dynamic, per-patient "which leads matter now" signal. It is gated and
+    zero-initialised so the head starts identical to contrast_v2 and the dynamic
+    term ramps up only where it helps — avoiding the regression seen when the
+    joint encoders were thrown away.
+
+    It also exposes interpretable softmax attention weights over the 12 leads for
+    each label (return_weights=True), e.g. for an inferior MI the IMI weights
+    should concentrate on II/III/aVF.
+    """
+
+    NUM_LEADS = 12
+
+    def __init__(self, dim: int, dropout: float, nhead: int = 4, prior_strength: float = 2.0) -> None:
+        super().__init__()
+        if dim % nhead != 0:
+            raise ValueError(f"dim ({dim}) must be divisible by nhead ({nhead})")
+        self.dim = dim
+        self.nhead = nhead
+        self.head_dim = dim // nhead
+
+        self.lead_encoder = SharedPerLeadEncoder(dim, dropout)
+        self.lead_pos = nn.Parameter(torch.randn(1, self.NUM_LEADS, dim) * 0.02)
+        layer = nn.TransformerEncoderLayer(
+            d_model=dim, nhead=nhead, dim_feedforward=dim * 2,
+            dropout=dropout, batch_first=True, norm_first=True,
+        )
+        self.lead_context_tf = nn.TransformerEncoder(layer, num_layers=1)
+
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.query = nn.ParameterDict(
+            {lbl: nn.Parameter(torch.randn(dim) * 0.02) for lbl in MI_LABELS}
+        )
+        self.out_proj = nn.ModuleDict({lbl: nn.Linear(dim, dim) for lbl in MI_LABELS})
+        # Gated + zero-init so the whole branch starts as a no-op (== contrast_v2).
+        self.gate = nn.ParameterDict(
+            {lbl: nn.Parameter(torch.full((dim,), -2.0)) for lbl in MI_LABELS}
+        )
+        for lbl in MI_LABELS:
+            nn.init.zeros_(self.out_proj[lbl].weight)
+            nn.init.zeros_(self.out_proj[lbl].bias)
+        self.attn_dropout = nn.Dropout(dropout)
+
+        lead_bias = {}
+        for lbl in MI_LABELS:
+            b = torch.zeros(self.NUM_LEADS)
+            for l in MI_LABEL_LEADS[lbl]:
+                b[l] = prior_strength
+            lead_bias[lbl] = nn.Parameter(b)
+        self.lead_bias = nn.ParameterDict(lead_bias)
+
+    def forward(self, signal: torch.Tensor, return_weights: bool = False):
+        tokens = self.lead_encoder(signal) + self.lead_pos                      # (B, 12, dim)
+        tokens = self.lead_context_tf(tokens)
+        B, L, _ = tokens.size()
+        k = self.k_proj(tokens).view(B, L, self.nhead, self.head_dim)
+        v = self.v_proj(tokens).view(B, L, self.nhead, self.head_dim)
+
+        adds: Dict[str, torch.Tensor] = {}
+        weights: Dict[str, torch.Tensor] = {}
+        for lbl in MI_LABELS:
+            q = self.query[lbl].view(self.nhead, self.head_dim)
+            scores = torch.einsum("blhd,hd->bhl", k, q) / (self.head_dim ** 0.5)   # (B,H,L)
+            scores = scores + self.lead_bias[lbl].view(1, 1, -1)
+            w = torch.softmax(scores, dim=-1)                                      # (B,H,L)
+            ctx = torch.einsum("bhl,blhd->bhd", self.attn_dropout(w), v).reshape(B, self.dim)
+            g = torch.sigmoid(self.gate[lbl])
+            adds[lbl] = g * self.out_proj[lbl](ctx)                               # gated additive term
+            if return_weights:
+                weights[lbl] = w.mean(dim=1)                                      # (B,L) avg over heads
+        if return_weights:
+            return adds, weights
+        return adds
+
+
 class DecoupledSubsetMIHead(nn.Module):
     """E10/E11: subset LeadGroupEncoder + group TF only — no shared CNN expert fusion.
 
@@ -413,7 +613,7 @@ class DecoupledSubsetMIHead(nn.Module):
             # Sibling contrast refinement (soft mutual exclusion within a region).
             self.inf_contrast = nn.Linear(branch_dim, branch_dim)
             self.ant_contrast = nn.Linear(branch_dim, branch_dim)
-        elif head_mode == "contrast_v2":
+        elif head_mode in ("contrast_v2", "dyn_anat_v2"):
             self.inferior_encoder     = LeadGroupEncoder(len(INFERIOR_LEADS),         branch_dim,      dropout)
             self.reciprocal_encoder   = LeadGroupEncoder(len(RECIPROCAL_LEADS),       branch_dim // 2, dropout)
             self.lateral_encoder      = LeadGroupEncoder(len(LATERAL_LEADS),          branch_dim,      dropout)
@@ -425,6 +625,17 @@ class DecoupledSubsetMIHead(nn.Module):
             self.inferior_region_tf = _group_tf()   # tokens: [inferior, reciprocal, lateral, inferolateral]
             self.anterior_region_tf = _group_tf()    # tokens: [anterior, lateral, anterior6]
             # Gated contrast refinement (identity at init).
+            self.inf_contrast = SiblingContrast(branch_dim)
+            self.ant_contrast = SiblingContrast(branch_dim)
+            if head_mode == "dyn_anat_v2":
+                # Phase 5: add a gated per-patient per-lead attention on TOP of the
+                # contrast_v2 joint encoders (starts as a no-op, ramps up if helpful).
+                self.lead_attn = DynamicLeadAttention(branch_dim, dropout)
+        elif head_mode == "dyn_anat":
+            # Phase 4. Per-patient dynamic anatomical attention over the 12 leads,
+            # with a soft (learnable) anatomical prior per label, followed by the
+            # same gated sibling contrast as contrast_v2.
+            self.dyn_attn = DynamicAnatomicalAttention(branch_dim, dropout)
             self.inf_contrast = SiblingContrast(branch_dim)
             self.ant_contrast = SiblingContrast(branch_dim)
         else:
@@ -456,7 +667,26 @@ class DecoupledSubsetMIHead(nn.Module):
             return self._forward_contrast(signal)
         if self.head_mode == "contrast_v2":
             return self._forward_contrast_v2(signal)
+        if self.head_mode == "dyn_anat":
+            return self._forward_dyn_anat(signal)
+        if self.head_mode == "dyn_anat_v2":
+            return self._forward_dyn_anat_v2(signal)
         return self._forward_shared(signal)
+
+    def _forward_dyn_anat(self, signal: torch.Tensor) -> torch.Tensor:
+        imi_ctx, asmi_ctx, ilmi_ctx, ami_ctx = self.dyn_attn(signal)
+
+        # Gated contrast (identity at init) — same sibling pairs as contrast_v2.
+        imi_ref  = self.inf_contrast(imi_ctx,  ilmi_ctx)
+        ilmi_ref = self.inf_contrast(ilmi_ctx, imi_ctx)
+        asmi_ref = self.ant_contrast(asmi_ctx, ami_ctx)
+        ami_ref  = self.ant_contrast(ami_ctx,  asmi_ctx)
+
+        imi  = self.imi_head(imi_ref)
+        asmi = self.asmi_head(asmi_ref)
+        ilmi = self.ilmi_head(ilmi_ref)
+        ami  = self.ami_head(ami_ref)
+        return torch.cat([imi, asmi, ilmi, ami], dim=-1)
 
     def _forward_shared(self, signal: torch.Tensor) -> torch.Tensor:
         inferior   = self.inferior_encoder(signal[:, INFERIOR_LEADS, :])
@@ -508,7 +738,12 @@ class DecoupledSubsetMIHead(nn.Module):
         ami  = self.ami_head(ami_ref)
         return torch.cat([imi, asmi, ilmi, ami], dim=-1)
 
-    def _forward_contrast_v2(self, signal: torch.Tensor) -> torch.Tensor:
+    def _contrast_v2_refs(self, signal: torch.Tensor):
+        """Region-context vectors (after gated sibling contrast) for the 4 MI labels.
+
+        Shared by contrast_v2 and dyn_anat_v2 so the joint cross-lead encoders are
+        computed identically.
+        """
         inferior   = self.inferior_encoder(signal[:, INFERIOR_LEADS, :])
         reciprocal = self.reciprocal_proj(self.reciprocal_encoder(signal[:, RECIPROCAL_LEADS, :]))
         lateral    = self.lateral_encoder(signal[:, LATERAL_LEADS, :])
@@ -532,11 +767,25 @@ class DecoupledSubsetMIHead(nn.Module):
         ilmi_ref = self.inf_contrast(ilmi_ctx, imi_ctx)
         asmi_ref = self.ant_contrast(asmi_ctx, ami_ctx)
         ami_ref  = self.ant_contrast(ami_ctx,  asmi_ctx)
+        return imi_ref, asmi_ref, ilmi_ref, ami_ref
 
+    def _forward_contrast_v2(self, signal: torch.Tensor) -> torch.Tensor:
+        imi_ref, asmi_ref, ilmi_ref, ami_ref = self._contrast_v2_refs(signal)
         imi  = self.imi_head(imi_ref)
         asmi = self.asmi_head(asmi_ref)
         ilmi = self.ilmi_head(ilmi_ref)
         ami  = self.ami_head(ami_ref)
+        return torch.cat([imi, asmi, ilmi, ami], dim=-1)
+
+    def _forward_dyn_anat_v2(self, signal: torch.Tensor) -> torch.Tensor:
+        # Joint cross-lead morphology (preserved from contrast_v2)...
+        imi_ref, asmi_ref, ilmi_ref, ami_ref = self._contrast_v2_refs(signal)
+        # ...plus a gated per-patient per-lead dynamic attention term (no-op at init).
+        adds = self.lead_attn(signal)
+        imi  = self.imi_head(imi_ref  + adds["imi"])
+        asmi = self.asmi_head(asmi_ref + adds["asmi"])
+        ilmi = self.ilmi_head(ilmi_ref + adds["ilmi"])
+        ami  = self.ami_head(ami_ref  + adds["ami"])
         return torch.cat([imi, asmi, ilmi, ami], dim=-1)
 
 

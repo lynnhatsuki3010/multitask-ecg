@@ -24,6 +24,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -135,7 +136,7 @@ def extract_logits(model, loader, arrhy_idx, mi_idx, cond_idx, device):
     all_logits_arrhy, all_logits_mi, all_logits_cond = [], [], []
     all_targets_arrhy, all_targets_mi, all_targets_cond = [], [], []
 
-    for batch in loader:
+    for batch in tqdm(loader, desc="  extracting logits", unit="batch"):
         signal = batch["signal"].to(device)
         labels = batch["labels"].to(device)          # "labels" not "label"
 

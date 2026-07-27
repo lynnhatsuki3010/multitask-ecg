@@ -86,7 +86,7 @@ preprocessing:
   bandpass_low: 0.5
   bandpass_high: 40.0
   notch_freq: 50.0
-  normalize: robust
+  normalize: zscore
 model:
   architecture: multi_branch_transformer
   routing_mode: soft

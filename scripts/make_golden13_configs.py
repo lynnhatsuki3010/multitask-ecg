@@ -8,9 +8,17 @@ Dataset: processed_dir5_imi50 (13 labels, threshold 50 uniform — already built
 
 Stage-gated (winner carries forward), single-variable per config:
   NORM  (aug off, uniform, BCE):        zscore / robust / minmax
-  AUG   (robust, uniform, BCE):         lead_dropout / mixup / random_crop / noise_warp
-  SAMP  (robust, lead_dropout, BCE):    uniform / weighted
-  LOSS  (robust, lead_dropout, uniform):BCE(base) / pos_weight / focal / asl
+  AUG   (zscore, uniform, BCE):         lead_dropout / mixup / random_crop / noise_warp
+  SAMP  (zscore, lead_dropout, BCE):    uniform / weighted
+  LOSS  (zscore, lead_dropout, uniform):BCE(base) / pos_weight / focal / asl
+
+NORM stage result (13-label @50, seed 42, single-variable, shared baseline):
+  zscore wins 8/12 metrics incl. every macro aggregate — Arrhy F1 0.801 vs robust
+  0.755 / minmax 0.766; MI macro AUPRC 0.523 vs 0.500 / 0.505; Cond F1 0.734 vs
+  0.716 / 0.705. Only IMI narrowly favours robust (AUPRC 0.617 vs 0.603).
+  => WINNER = zscore, carried forward into the AUG / SAMP / LOSS stages below.
+  (Note: the thesis' 7-label @IMI:80 sweep had selected robust; the unified
+  13-label @50 setting reverses that, matching the original STAGE2-NORM finding.)
 
 Usage:
   python scripts/make_golden13_configs.py
@@ -32,18 +40,18 @@ MATRIX = [
     ("g13_norm_e01_zscore", "zscore", [],                                    False, False, False, False),
     ("g13_norm_e02_robust", "robust", [],                                    False, False, False, False),
     ("g13_norm_e03_minmax", "minmax", [],                                    False, False, False, False),
-    # AUG stage — robust, uniform, BCE
-    ("g13_aug_e04_lead_dropout", "robust", ["aug_lead_dropout"],             False, False, False, False),
-    ("g13_aug_e01_mixup",        "robust", ["aug_mixup"],                    False, False, False, False),
-    ("g13_aug_e02_random_crop",  "robust", ["aug_random_crop"],              False, False, False, False),
-    ("g13_aug_e03_noise_warp",   "robust", ["aug_baseline_wander", "aug_time_warp"], False, False, False, False),
-    # SAMP stage — robust, lead_dropout, BCE
-    ("g13_samp_e01_uniform",  "robust", ["aug_lead_dropout"],                False, False, False, False),
-    ("g13_samp_e02_weighted", "robust", ["aug_lead_dropout"],                True,  False, False, False),
-    # LOSS stage — robust, lead_dropout, uniform
-    ("g13_loss_e01_posweight", "robust", ["aug_lead_dropout"],               False, True,  False, False),
-    ("g13_loss_e02_focal",     "robust", ["aug_lead_dropout"],               False, False, True,  False),
-    ("g13_loss_e04_asl",       "robust", ["aug_lead_dropout"],               False, False, False, True),
+    # AUG stage — zscore (NORM winner), uniform, BCE
+    ("g13_aug_e04_lead_dropout", "zscore", ["aug_lead_dropout"],             False, False, False, False),
+    ("g13_aug_e01_mixup",        "zscore", ["aug_mixup"],                    False, False, False, False),
+    ("g13_aug_e02_random_crop",  "zscore", ["aug_random_crop"],              False, False, False, False),
+    ("g13_aug_e03_noise_warp",   "zscore", ["aug_baseline_wander", "aug_time_warp"], False, False, False, False),
+    # SAMP stage — zscore, lead_dropout, BCE
+    ("g13_samp_e01_uniform",  "zscore", ["aug_lead_dropout"],                False, False, False, False),
+    ("g13_samp_e02_weighted", "zscore", ["aug_lead_dropout"],                True,  False, False, False),
+    # LOSS stage — zscore, lead_dropout, uniform
+    ("g13_loss_e01_posweight", "zscore", ["aug_lead_dropout"],               False, True,  False, False),
+    ("g13_loss_e02_focal",     "zscore", ["aug_lead_dropout"],               False, False, True,  False),
+    ("g13_loss_e04_asl",       "zscore", ["aug_lead_dropout"],               False, False, False, True),
 ]
 
 

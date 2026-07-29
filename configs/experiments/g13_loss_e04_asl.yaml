@@ -119,11 +119,11 @@ model:
   use_multi_scale: true
   use_cross_attention: true
 augmentation:
-  aug_lead_dropout: true
+  aug_lead_dropout: false
   aug_random_crop: false
   aug_baseline_wander: false
   aug_time_warp: false
-  aug_mixup: false
+  aug_mixup: true
   mixup_alpha: 0.2
 training:
   batch_size: 96

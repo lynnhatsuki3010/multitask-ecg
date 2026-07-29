@@ -50,9 +50,14 @@ runs/
 wandb/
 scripts/_tmp*
 tmp_sweep_configs/
+scratch/
+
+# ─── Agent / editor local config ─────────────────────────────────
+.claude/
 
 # ─── XAI ─────────────────────────────────────────────────────────
 artifacts/
+notebooks/**/outputs/
 
 # ─── Results ─────────────────────────────────────────────────────────
 results/

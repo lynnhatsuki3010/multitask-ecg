@@ -529,6 +529,12 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    # Without this, cuDNN's autotuner picks convolution algorithms by timing them,
+    # so the same seed on the same GPU can still give different numbers. This
+    # workload is dataloader-bound (the GPU idles waiting on scipy filtering), so
+    # giving up the autotuner costs almost nothing here.
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def get_device() -> torch.device:
@@ -643,6 +649,7 @@ def build_datasets(cfg: dict, data: dict, args) -> dict:
 def build_weighted_sampler(
     dataset,
     max_ratio: float = 5.0,
+    generator: torch.Generator = None,
 ) -> torch.utils.data.WeightedRandomSampler:
     """
     WeightedRandomSampler for multi-label imbalance.
@@ -686,7 +693,22 @@ def build_weighted_sampler(
         weights     = torch.from_numpy(sample_weights),
         num_samples = n_samples,
         replacement = True,
+        generator   = generator,
     )
+
+
+def _seed_worker(worker_id: int) -> None:
+    """Give every DataLoader worker its own reproducible numpy/random stream.
+
+    Augmentations in PTBXLDataset.__getitem__ draw from np.random. PyTorch seeds
+    each worker's *torch* RNG but not numpy's, so without this hook the numpy
+    stream is undefined (and can repeat across workers), which both breaks
+    reproducibility and reduces augmentation diversity. Deriving the seed from
+    torch.initial_seed() keeps it tied to the run seed and the worker id.
+    """
+    worker_seed = (torch.initial_seed() + worker_id) % (2 ** 32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def build_loaders(datasets: dict, cfg: dict, args) -> dict:
@@ -700,28 +722,45 @@ def build_loaders(datasets: dict, cfg: dict, args) -> dict:
     if use_wrs:
         print("\n► WeightedRandomSampler enabled (oversampling minority classes)")
 
+    # Reproducible shuffling + per-worker numpy seeding (see _seed_worker).
+    # The sampler gets its own generator so its draws do not interleave with the
+    # loader's worker-seed draws; on the SAMP stage the sampling order *is* the
+    # treatment, so it must not ride on the global RNG.
+    seed = train_cfg.get("seed", 42)
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    sampler_generator = torch.Generator()
+    sampler_generator.manual_seed(seed + 1)
+
     loaders = {}
     for split, ds in datasets.items():
+        common = dict(
+            batch_size         = batch_size,
+            num_workers        = num_workers,
+            pin_memory         = pin_memory,
+            collate_fn         = collate_fn,
+            worker_init_fn     = _seed_worker if num_workers > 0 else None,
+            # Respawning 28 workers every epoch re-imports numpy/scipy/wfdb each
+            # time; keeping them alive also keeps each worker's numpy stream
+            # running instead of restarting it, which stays deterministic.
+            persistent_workers = num_workers > 0,
+        )
         if split == "train" and use_wrs:
-            sampler = build_weighted_sampler(ds)
+            sampler = build_weighted_sampler(ds, generator=sampler_generator)
             loaders[split] = DataLoader(
                 ds,
-                batch_size  = batch_size,
                 sampler     = sampler,       # sampler replaces shuffle
-                num_workers = num_workers,
-                pin_memory  = pin_memory,
-                collate_fn  = collate_fn,
                 drop_last   = True,
+                generator   = generator,
+                **common,
             )
         else:
             loaders[split] = DataLoader(
                 ds,
-                batch_size  = batch_size,
                 shuffle     = (split == "train"),
-                num_workers = num_workers,
-                pin_memory  = pin_memory,
-                collate_fn  = collate_fn,
                 drop_last   = (split == "train"),
+                generator   = generator if split == "train" else None,
+                **common,
             )
     return loaders
 

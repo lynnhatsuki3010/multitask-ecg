@@ -61,3 +61,6 @@ notebooks/**/outputs/
 
 # ─── Results ─────────────────────────────────────────────────────────
 results/
+
+# ─── Result archives pulled back from cloud runs ─────────────────────
+*.tar.gz

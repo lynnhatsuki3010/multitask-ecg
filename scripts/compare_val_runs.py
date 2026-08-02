@@ -33,7 +33,19 @@ if hasattr(sys.stdout, "reconfigure"):
 
 MONITOR_KEY = "auprc/mi/IMI"          # training.monitor_metric = imi_auprc
 
+# Stage winners are a different decision from checkpoint selection, so they get a
+# different metric. Picking the recipe by one label's AUPRC would quietly optimise
+# the pipeline for IMI while the paper claims balanced 13-label multitask; mixup
+# shows exactly that failure mode (best arrhythmia, worst conduction).
+#
+# S averages the three task macro AUPRCs: threshold-free, one weight per task, and
+# far steadier than an F1 composite - across GPU architectures macro AUPRC moves by
+# ~0.01 while rare-label F1 moves by ~0.16.
+COMPOSITE_KEY = "S/composite"
+COMPOSITE_PARTS = ["auprc/arrhy/macro", "auprc/mi/macro", "auprc/cond/macro"]
+
 PRIMARY_METRICS = [
+    ("S (mean task AUPRC)", COMPOSITE_KEY),
     ("MI macro F1", "f1/mi/macro"),
     ("IMI F1", "f1/mi/IMI"),
     ("ILMI F1", "f1/mi/ILMI"),
@@ -88,8 +100,20 @@ def load_experiment_id(run_dir: Path) -> str:
     return run_dir.name
 
 
+def add_composite(metrics: Dict) -> Dict:
+    """Attach S = mean of the three task macro AUPRCs, when all three are present."""
+    parts = [metrics.get(k) for k in COMPOSITE_PARTS]
+    if all(p is not None for p in parts):
+        metrics[COMPOSITE_KEY] = sum(parts) / len(parts)
+    return metrics
+
+
 def best_val_epoch(run_dir: Path) -> Optional[Tuple[int, Dict]]:
-    """Return (epoch_index, val metrics) for the best validation monitor score."""
+    """Return (epoch_index, val metrics) for the best validation monitor score.
+
+    The epoch is still chosen by MONITOR_KEY because that is what produced
+    best_model.pth; S is only computed on top, for comparing runs against runs.
+    """
     hist_path = run_dir / "history.json"
     if not hist_path.exists():
         return None
@@ -98,7 +122,8 @@ def best_val_epoch(run_dir: Path) -> Optional[Tuple[int, Dict]]:
     scored = [(i, e) for i, e in enumerate(val) if e.get(MONITOR_KEY) is not None]
     if not scored:
         return None
-    return max(scored, key=lambda pair: pair[1][MONITOR_KEY])
+    idx, metrics = max(scored, key=lambda pair: pair[1][MONITOR_KEY])
+    return idx, add_composite(dict(metrics))
 
 
 def load_seed(run_dir: Path) -> Optional[int]:
@@ -200,7 +225,7 @@ def main() -> None:
 
         test_path = run_dir / "test_metrics.json"
         if test_path.exists():
-            test_metrics = json.loads(test_path.read_text(encoding="utf-8"))
+            test_metrics = add_composite(json.loads(test_path.read_text(encoding="utf-8")))
             drift_rows[name] = {
                 key: (test_metrics[key] - val_metrics[key])
                 for _, key in PRIMARY_METRICS + SECONDARY_METRICS

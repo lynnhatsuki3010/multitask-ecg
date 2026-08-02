@@ -64,3 +64,9 @@ results/
 
 # ─── Result archives pulled back from cloud runs ─────────────────────
 *.tar.gz
+*.tar
+*.sha
+# Stage configs are generated per run by make_golden_stage.py (the dataloader
+# regime has to match the machine), so they are never committed.
+configs/experiments/gp_*.yaml
+configs/experiments/gpb10_*.yaml

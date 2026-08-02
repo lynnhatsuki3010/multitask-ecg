@@ -66,6 +66,10 @@ def main() -> None:
                     help="Must match every other run it will be compared against: "
                          "num_workers changes the numpy augmentation stream.")
     ap.add_argument("--prefix", default="abl")
+    ap.add_argument("--monitor", default="imi_auprc",
+                    help="training.monitor_metric for every step. Pinned rather than inherited: "
+                         "the reported chain mixed imi_auprc and f1/cond/macro, so its rows "
+                         "compared checkpoints chosen by different rules.")
     args = ap.parse_args()
 
     with open(os.path.join(CFG_DIR, f"{args.base}.yaml"), "r", encoding="utf-8") as f:
@@ -78,6 +82,7 @@ def main() -> None:
         cfg = copy.deepcopy(base)
         cfg["model"] = copy.deepcopy(model_state)
         cfg["training"]["num_workers"] = args.num_workers
+        cfg["training"]["monitor_metric"] = args.monitor
         cfg["training"]["save_every"] = 10 ** 6      # keep best_model.pth only
         exp_id = f"{args.prefix}_{name}"
         cfg["experiment"] = {
@@ -92,7 +97,7 @@ def main() -> None:
             yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         made.append((exp_id, label, sorted(delta)))
 
-    print(f"Recipe from {args.base}  (num_workers={args.num_workers})\n")
+    print(f"Recipe from {args.base}  (num_workers={args.num_workers}, monitor={args.monitor})\n")
     for exp_id, label, changed in made:
         print(f"  {exp_id:24} {label:34} changed: {', '.join(changed)}")
     print("\nRun:")

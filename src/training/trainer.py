@@ -259,6 +259,12 @@ class Trainer:
             )
 
     MONITOR_ALIASES = {
+        # Task-balanced, threshold-free. Use this when the run belongs to a sweep
+        # whose claim is balanced multitask: monitoring one label's AUPRC quietly
+        # tunes the checkpoint for that label, and monitoring an F1 drags in the
+        # threshold noise of the rare classes (AMI F1 moves ~0.16 between GPUs
+        # where macro AUPRC moves ~0.01).
+        "task_auprc": ["auprc/arrhy/macro", "auprc/mi/macro", "auprc/cond/macro"],
         "mean_auroc": ["auroc/arrhy/macro", "auroc/mi/macro"],
         "macro_f1": ["f1/arrhy/macro", "f1/mi/macro"],
         "arrhythmia_f1": ["f1/arrhy/macro"],
@@ -284,6 +290,7 @@ class Trainer:
 
     def _monitor_label(self) -> str:
         friendly = {
+            "task_auprc": "mean task AUPRC",
             "mean_auroc": "mean AUROC",
             "macro_f1": "mean macro F1",
             "arrhythmia_f1": "arrhythmia macro F1",

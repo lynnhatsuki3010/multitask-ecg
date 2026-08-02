@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -31,7 +32,26 @@ import yaml
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-MONITOR_KEY = "auprc/mi/IMI"          # training.monitor_metric = imi_auprc
+MONITOR_KEY = "auprc/mi/IMI"          # fallback when a run records no monitor_metric
+
+# Mirrors Trainer.MONITOR_ALIASES. The epoch reported here has to be the epoch that
+# produced best_model.pth, so it is resolved per run from its own config_snapshot -
+# runs in this project were trained under different monitors (imi_auprc early,
+# f1/cond/macro during the conduction-tuning branch), and assuming one of them would
+# report an epoch the checkpoint never came from.
+MONITOR_ALIASES = {
+    "task_auprc": ["auprc/arrhy/macro", "auprc/mi/macro", "auprc/cond/macro"],
+    "mean_auroc": ["auroc/arrhy/macro", "auroc/mi/macro"],
+    "macro_f1": ["f1/arrhy/macro", "f1/mi/macro"],
+    "arrhythmia_f1": ["f1/arrhy/macro"],
+    "mi_f1": ["f1/mi/macro"],
+    "imi_f1": ["f1/mi/IMI"],
+    "imi_auroc": ["auroc/mi/IMI"],
+    "imi_auprc": ["auprc/mi/IMI"],
+    "asmi_f1": ["f1/mi/ASMI"],
+    "asmi_auroc": ["auroc/mi/ASMI"],
+    "asmi_auprc": ["auprc/mi/ASMI"],
+}
 
 # Stage winners are a different decision from checkpoint selection, so they get a
 # different metric. Picking the recipe by one label's AUPRC would quietly optimise
@@ -108,22 +128,39 @@ def add_composite(metrics: Dict) -> Dict:
     return metrics
 
 
-def best_val_epoch(run_dir: Path) -> Optional[Tuple[int, Dict]]:
-    """Return (epoch_index, val metrics) for the best validation monitor score.
+def monitor_keys(run_dir: Path) -> Tuple[str, List[str]]:
+    """Return (monitor name, metric keys) this run actually selected its epoch by."""
+    snap = run_dir / "config_snapshot.yaml"
+    name = MONITOR_KEY
+    if snap.exists():
+        cfg = yaml.safe_load(snap.read_text(encoding="utf-8"))
+        name = (cfg.get("training") or {}).get("monitor_metric") or MONITOR_KEY
+    return name, MONITOR_ALIASES.get(name, [name])
 
-    The epoch is still chosen by MONITOR_KEY because that is what produced
-    best_model.pth; S is only computed on top, for comparing runs against runs.
+
+def best_val_epoch(run_dir: Path) -> Optional[Tuple[int, Dict, str]]:
+    """Return (epoch_index, val metrics, monitor name) for the checkpoint's epoch.
+
+    The epoch is chosen by the run's own monitor so it matches best_model.pth; S is
+    computed on top afterwards, purely for comparing runs against runs.
     """
     hist_path = run_dir / "history.json"
     if not hist_path.exists():
         return None
     history = json.loads(hist_path.read_text(encoding="utf-8"))
     val = history.get("val") or []
-    scored = [(i, e) for i, e in enumerate(val) if e.get(MONITOR_KEY) is not None]
+    name, keys = monitor_keys(run_dir)
+
+    def score(entry: Dict) -> float:
+        vals = [entry.get(k) for k in keys]
+        vals = [v for v in vals if v is not None]
+        return sum(vals) / len(vals) if vals else float("nan")
+
+    scored = [(i, e) for i, e in enumerate(val) if not math.isnan(score(e))]
     if not scored:
         return None
-    idx, metrics = max(scored, key=lambda pair: pair[1][MONITOR_KEY])
-    return idx, add_composite(dict(metrics))
+    idx, metrics = max(scored, key=lambda pair: score(pair[1]))
+    return idx, add_composite(dict(metrics)), name
 
 
 def load_seed(run_dir: Path) -> Optional[int]:
@@ -204,13 +241,14 @@ def main() -> None:
     epochs: Dict[str, int] = {}
     paths: Dict[str, Path] = {}
     exp_ids: Dict[str, str] = {}
+    monitors: Dict[str, str] = {}
 
     for run_dir in run_dirs:
         picked = best_val_epoch(run_dir)
         if picked is None:
             print(f"[skip] no usable history.json in {run_dir}")
             continue
-        epoch_idx, val_metrics = picked
+        epoch_idx, val_metrics, monitor_name = picked
 
         exp_id = load_experiment_id(run_dir)
         seed = load_seed(run_dir)
@@ -221,6 +259,7 @@ def main() -> None:
         exp_ids[name] = exp_id
         val_rows[name] = val_metrics
         epochs[name] = epoch_idx + 1
+        monitors[name] = monitor_name
         paths[name] = run_dir
 
         test_path = run_dir / "test_metrics.json"
@@ -265,9 +304,14 @@ def main() -> None:
 
     lines += ["## Best validation epoch", ""]
     for name in columns:
-        score = val_rows[name].get(MONITOR_KEY)
-        lines.append(f"- **{name}**: epoch {epochs[name]}  "
-                     f"(val {MONITOR_KEY}={fmt(score)})  `{paths[name]}`")
+        lines.append(f"- **{name}**: epoch {epochs[name]} by `{monitors[name]}`  "
+                     f"(val S={fmt(val_rows[name].get(COMPOSITE_KEY))}, "
+                     f"IMI AUPRC={fmt(val_rows[name].get(MONITOR_KEY))})  `{paths[name]}`")
+    used = sorted(set(monitors.values()))
+    if len(used) > 1:
+        lines += ["", f"> Runs were trained under different monitors ({', '.join(used)}), "
+                      "so their checkpoints come from epochs chosen by different rules. "
+                      "Validation metrics above are still comparable; test metrics are not."]
 
     report = "\n".join(lines)
     print(report)

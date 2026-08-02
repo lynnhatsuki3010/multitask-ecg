@@ -63,7 +63,7 @@ STAGES = {
 }
 
 
-def build(base, stage, variant, norm, aug, samp, loss, num_workers, base_id, prefix):
+def build(base, stage, variant, norm, aug, samp, loss, num_workers, base_id, prefix, monitor):
     cfg = copy.deepcopy(base)
 
     cfg["paths"]["processed"] = PROCESSED
@@ -88,6 +88,11 @@ def build(base, stage, variant, norm, aug, samp, loss, num_workers, base_id, pre
     tr["use_pos_weight"], tr["use_focal"], tr["use_asl"] = posw, focal, asl
     tr["weighted_sampler"] = SAMP_OPTIONS[samp]
     tr["num_workers"] = num_workers
+    # Pinned rather than inherited: the base config carries whatever monitor its own
+    # experiment needed (branche10_05 monitors f1/cond/macro because it was tuning the
+    # conduction branch), and a sweep whose arms select checkpoints by different rules
+    # compares epochs chosen for different things.
+    tr["monitor_metric"] = monitor
     # Keep best_model.pth only. The base config saves every 5 epochs, which adds
     # three 147 MB dumps per run (~4.8 GB across the 11-run chain) that nothing
     # downstream reads.
@@ -126,6 +131,9 @@ def main():
     ap.add_argument("--prefix", default=None,
                     help="Experiment-id prefix (default: 'gp' for the stock base, 'gp<base>' "
                          "otherwise) so sweeps on different backbones never collide.")
+    ap.add_argument("--monitor", default="imi_auprc",
+                    help="training.monitor_metric for every config in the sweep. Pinned here "
+                         "rather than inherited so all arms select checkpoints the same way.")
     args = ap.parse_args()
 
     base_path = os.path.join(CFG_DIR, f"{args.base}.yaml")
@@ -137,7 +145,8 @@ def main():
     made, skipped = [], []
     for variant in spec["variants"]:
         exp_id, cfg = build(base, args.stage, variant, args.norm, args.aug,
-                            args.samp, args.loss, args.num_workers, args.base, prefix)
+                            args.samp, args.loss, args.num_workers, args.base, prefix,
+                            args.monitor)
         # the inherited-baseline arm was already trained in the previous stage
         if variant == spec["reuse"]:
             skipped.append((exp_id, variant))
@@ -147,7 +156,8 @@ def main():
             yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         made.append(dst)
 
-    print(f"STAGE {args.stage.upper()}  (base={args.base}, num_workers={args.num_workers})")
+    print(f"STAGE {args.stage.upper()}  (base={args.base}, num_workers={args.num_workers}, "
+          f"monitor={args.monitor})")
     print(f"  inherited: norm={args.norm} aug={args.aug} samp={args.samp} loss={args.loss}")
     print()
     for p in made:

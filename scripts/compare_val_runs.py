@@ -59,6 +59,8 @@ def parse_args() -> argparse.Namespace:
                    help='Glob pattern, e.g. "checkpoints/run_*gp_s*"')
     p.add_argument("--drift", action="store_true",
                    help="Also print the val->test drift table (diagnostic only)")
+    p.add_argument("--aggregate", action="store_true",
+                   help="Group runs by experiment id and report mean+/-SD across seeds")
     p.add_argument("--out", default=None, help="Optional path to save markdown")
     return p.parse_args()
 
@@ -99,8 +101,56 @@ def best_val_epoch(run_dir: Path) -> Optional[Tuple[int, Dict]]:
     return max(scored, key=lambda pair: pair[1][MONITOR_KEY])
 
 
+def load_seed(run_dir: Path) -> Optional[int]:
+    snap = run_dir / "config_snapshot.yaml"
+    if not snap.exists():
+        return None
+    cfg = yaml.safe_load(snap.read_text(encoding="utf-8"))
+    return (cfg.get("training") or {}).get("seed")
+
+
 def fmt(value) -> str:
-    return "-" if value is None else f"{value:.3f}"
+    if value is None:
+        return "-"
+    if isinstance(value, str):
+        return value
+    return f"{value:.3f}"
+
+
+def aggregate_by_experiment(
+    columns: List[str],
+    rows: Dict[str, Dict[str, float]],
+    exp_ids: Dict[str, str],
+    metrics,
+) -> Tuple[List[str], Dict[str, Dict[str, str]], Dict[str, int]]:
+    """Collapse per-run columns into one column per experiment id.
+
+    Each cell becomes "mean+/-sd" over the seeds available for that experiment.
+    A single-seed experiment prints the bare value, so it stays visibly weaker
+    evidence than a cell carrying a spread.
+    """
+    groups: Dict[str, List[str]] = {}
+    for col in columns:
+        groups.setdefault(exp_ids[col], []).append(col)
+
+    agg_cols = sorted(groups)
+    agg_rows: Dict[str, Dict[str, str]] = {}
+    counts = {exp: len(cols) for exp, cols in groups.items()}
+
+    for exp, cols in groups.items():
+        cell: Dict[str, str] = {}
+        for _, key in metrics:
+            values = [rows[c][key] for c in cols if rows[c].get(key) is not None]
+            if not values:
+                continue
+            mean = sum(values) / len(values)
+            if len(values) == 1:
+                cell[key] = f"{mean:.3f}"
+            else:
+                var = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+                cell[key] = f"{mean:.3f}+/-{var ** 0.5:.3f}"
+        agg_rows[exp] = cell
+    return agg_cols, agg_rows, counts
 
 
 def render_table(title: str, metrics, columns: List[str],
@@ -128,6 +178,7 @@ def main() -> None:
     drift_rows: Dict[str, Dict[str, float]] = {}
     epochs: Dict[str, int] = {}
     paths: Dict[str, Path] = {}
+    exp_ids: Dict[str, str] = {}
 
     for run_dir in run_dirs:
         picked = best_val_epoch(run_dir)
@@ -136,10 +187,13 @@ def main() -> None:
             continue
         epoch_idx, val_metrics = picked
 
-        name = load_experiment_id(run_dir)
+        exp_id = load_experiment_id(run_dir)
+        seed = load_seed(run_dir)
+        name = f"{exp_id}@s{seed}" if seed is not None else exp_id
         while name in val_rows:                     # keep duplicate ids distinct
             name += "'"
         columns.append(name)
+        exp_ids[name] = exp_id
         val_rows[name] = val_metrics
         epochs[name] = epoch_idx + 1
         paths[name] = run_dir
@@ -159,10 +213,22 @@ def main() -> None:
 
     lines = ["# Validation Comparison", "",
              f"Winner picked on validation `{MONITOR_KEY}`; test set untouched.", ""]
-    lines += render_table("Primary metrics (validation, best epoch)",
-                          PRIMARY_METRICS, columns, val_rows)
-    lines += render_table("Secondary metrics (validation, best epoch)",
-                          SECONDARY_METRICS, columns, val_rows)
+
+    if args.aggregate:
+        all_metrics = PRIMARY_METRICS + SECONDARY_METRICS
+        agg_cols, agg_rows, counts = aggregate_by_experiment(
+            columns, val_rows, exp_ids, all_metrics)
+        lines += [f"Mean+/-SD across seeds: "
+                  + ", ".join(f"{e} (n={counts[e]})" for e in agg_cols), ""]
+        lines += render_table("Primary metrics (validation, best epoch)",
+                              PRIMARY_METRICS, agg_cols, agg_rows)
+        lines += render_table("Secondary metrics (validation, best epoch)",
+                              SECONDARY_METRICS, agg_cols, agg_rows)
+    else:
+        lines += render_table("Primary metrics (validation, best epoch)",
+                              PRIMARY_METRICS, columns, val_rows)
+        lines += render_table("Secondary metrics (validation, best epoch)",
+                              SECONDARY_METRICS, columns, val_rows)
 
     if args.drift and drift_rows:
         drift_cols = [c for c in columns if c in drift_rows]

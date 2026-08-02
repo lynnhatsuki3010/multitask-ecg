@@ -28,7 +28,7 @@ import os
 import yaml
 
 CFG_DIR = "configs/experiments"
-BASE = os.path.join(CFG_DIR, "arch_e06_multi_branch.yaml")
+DEFAULT_BASE = "arch_e06_multi_branch"
 PROCESSED = "data/processed_dir5_imi50"
 SPLITS = "data/splits_dir5_imi50"
 
@@ -63,7 +63,7 @@ STAGES = {
 }
 
 
-def build(base, stage, variant, norm, aug, samp, loss, num_workers):
+def build(base, stage, variant, norm, aug, samp, loss, num_workers, base_id, prefix):
     cfg = copy.deepcopy(base)
 
     cfg["paths"]["processed"] = PROCESSED
@@ -99,11 +99,11 @@ def build(base, stage, variant, norm, aug, samp, loss, num_workers):
     lw.setdefault("hrv", 0.0)
 
     stage_no = {"norm": 1, "aug": 2, "samp": 3, "loss": 4}[stage]
-    exp_id = f"gp_s{stage_no}_{stage}_{variant}"
+    exp_id = f"{prefix}_s{stage_no}_{stage}_{variant}"
     cfg["experiment"] = {
         "id": exp_id,
-        "track": "golden13_imi50_staged",
-        "parent": "arch_e06_multi_branch",
+        "track": f"golden13_imi50_staged@{base_id}",
+        "parent": base_id,
         "stage": stage,
         "variant": variant,
         "inherited": {"normalize": norm, "augmentation": aug, "sampler": samp, "loss": loss},
@@ -119,16 +119,25 @@ def main():
     ap.add_argument("--samp", default="uniform", choices=list(SAMP_OPTIONS), help="inherited SAMP winner")
     ap.add_argument("--loss", default="bce", choices=list(LOSS_OPTIONS), help="inherited LOSS baseline")
     ap.add_argument("--num-workers", type=int, default=28)
+    ap.add_argument("--base", default=DEFAULT_BASE,
+                    help="Base config id in configs/experiments (without .yaml). The sweep "
+                         "only means something on the architecture the paper actually claims, "
+                         "so point this at that config.")
+    ap.add_argument("--prefix", default=None,
+                    help="Experiment-id prefix (default: 'gp' for the stock base, 'gp<base>' "
+                         "otherwise) so sweeps on different backbones never collide.")
     args = ap.parse_args()
 
-    with open(BASE, "r", encoding="utf-8") as f:
+    base_path = os.path.join(CFG_DIR, f"{args.base}.yaml")
+    with open(base_path, "r", encoding="utf-8") as f:
         base = yaml.safe_load(f)
+    prefix = args.prefix or ("gp" if args.base == DEFAULT_BASE else "gpb10")
 
     spec = STAGES[args.stage]
     made, skipped = [], []
     for variant in spec["variants"]:
         exp_id, cfg = build(base, args.stage, variant, args.norm, args.aug,
-                            args.samp, args.loss, args.num_workers)
+                            args.samp, args.loss, args.num_workers, args.base, prefix)
         # the inherited-baseline arm was already trained in the previous stage
         if variant == spec["reuse"]:
             skipped.append((exp_id, variant))
@@ -138,7 +147,7 @@ def main():
             yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         made.append(dst)
 
-    print(f"STAGE {args.stage.upper()}  (num_workers={args.num_workers})")
+    print(f"STAGE {args.stage.upper()}  (base={args.base}, num_workers={args.num_workers})")
     print(f"  inherited: norm={args.norm} aug={args.aug} samp={args.samp} loss={args.loss}")
     print()
     for p in made:

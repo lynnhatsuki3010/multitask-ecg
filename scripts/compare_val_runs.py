@@ -93,6 +93,12 @@ def parse_args() -> argparse.Namespace:
                    help="Also print the val->test drift table (diagnostic only)")
     p.add_argument("--aggregate", action="store_true",
                    help="Group runs by experiment id and report mean+/-SD across seeds")
+    p.add_argument("--select-by", default=None,
+                   help="Re-select every run's epoch by this metric (alias or raw key) instead "
+                        "of the monitor it trained under. Diagnostic only: it answers 'would the "
+                        "ranking hold if checkpoints had been chosen for this metric', which "
+                        "matters when one arm is specialised for the training monitor. Values "
+                        "become optimistic (max over epochs) but equally so for every arm.")
     p.add_argument("--out", default=None, help="Optional path to save markdown")
     return p.parse_args()
 
@@ -128,8 +134,13 @@ def add_composite(metrics: Dict) -> Dict:
     return metrics
 
 
-def monitor_keys(run_dir: Path) -> Tuple[str, List[str]]:
-    """Return (monitor name, metric keys) this run actually selected its epoch by."""
+def monitor_keys(run_dir: Path, override: Optional[str] = None) -> Tuple[str, List[str]]:
+    """Return (monitor name, metric keys) this run selected its epoch by.
+
+    `override` re-selects by a different metric for diagnostic comparisons.
+    """
+    if override:
+        return override, MONITOR_ALIASES.get(override, [override])
     snap = run_dir / "config_snapshot.yaml"
     name = MONITOR_KEY
     if snap.exists():
@@ -138,7 +149,7 @@ def monitor_keys(run_dir: Path) -> Tuple[str, List[str]]:
     return name, MONITOR_ALIASES.get(name, [name])
 
 
-def best_val_epoch(run_dir: Path) -> Optional[Tuple[int, Dict, str]]:
+def best_val_epoch(run_dir: Path, override: Optional[str] = None) -> Optional[Tuple[int, Dict, str]]:
     """Return (epoch_index, val metrics, monitor name) for the checkpoint's epoch.
 
     The epoch is chosen by the run's own monitor so it matches best_model.pth; S is
@@ -149,7 +160,7 @@ def best_val_epoch(run_dir: Path) -> Optional[Tuple[int, Dict, str]]:
         return None
     history = json.loads(hist_path.read_text(encoding="utf-8"))
     val = history.get("val") or []
-    name, keys = monitor_keys(run_dir)
+    name, keys = monitor_keys(run_dir, override)
 
     def score(entry: Dict) -> float:
         vals = [entry.get(k) for k in keys]
@@ -244,7 +255,7 @@ def main() -> None:
     monitors: Dict[str, str] = {}
 
     for run_dir in run_dirs:
-        picked = best_val_epoch(run_dir)
+        picked = best_val_epoch(run_dir, args.select_by)
         if picked is None:
             print(f"[skip] no usable history.json in {run_dir}")
             continue

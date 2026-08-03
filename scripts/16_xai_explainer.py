@@ -379,12 +379,20 @@ def main(args):
     print(f"Arrhythmia labels : {arrhy_names}")
     print(f"MI labels         : {mi_names}")
 
+    # Conduction was added after this script was written; without it the head is
+    # built with zero outputs and load_state_dict fails on a [0, 128] mismatch.
+    cond_names = [l["name"] for l in cfg.get("labels", [])
+                  if l["index"] in cfg.get("label_groups", {}).get("conduction", [])]
+    print(f"Conduction labels : {cond_names}")
+
+    hrv_enabled = bool(cfg.get("hrv", {}).get("enabled", True))
     hrv_features = cfg.get("hrv", {}).get("features", ["rmssd", "sdnn", "mean_hr"])
     model = build_model(
-        cfg                  = cfg,
-        num_arrhythmia_labels = len(arrhy_names),
-        num_mi_labels         = len(mi_names),
-        num_hrv_targets       = len(hrv_features),
+        cfg                     = cfg,
+        num_arrhythmia_labels   = len(arrhy_names),
+        num_mi_labels           = len(mi_names),
+        num_hrv_targets         = len(hrv_features) if hrv_enabled else 0,
+        num_conduction_labels   = len(cond_names),
     ).to(device)
 
     state = torch.load(model_path, map_location=device, weights_only=False)

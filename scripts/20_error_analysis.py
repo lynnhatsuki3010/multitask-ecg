@@ -80,17 +80,28 @@ def main() -> None:
     ck = torch.load(str(run / "best_model.pth"), map_location=device)
     model.load_state_dict(ck.get("model", ck.get("model_state_dict", ck)))
 
+    cal = json.loads((run / "calibration_results.json").read_text(encoding="utf-8"))
+
+    # The per-class thresholds were tuned on TEMPERATURE-SCALED probabilities, so
+    # the same scaling has to be applied here. Thresholding a raw sigmoid against
+    # them compares two different probability scales: with T_mi ~ 0.33 the scaled
+    # probabilities are far sharper, and the un-scaled ones almost never reach a
+    # threshold like 0.80 - which silently turns the confusion matrix into a table
+    # of missed cases.
+    temps = cal.get("temperature", {})
+
     probs = {t: [] for t in order}
     with torch.no_grad():
         for batch in loader:
             out = model(batch["signal"].to(device))
             for t in order:
-                probs[t].append(torch.sigmoid(out[t]).cpu().numpy())
+                T = float(temps.get(t, 1.0))
+                probs[t].append(torch.sigmoid(out[t] / T).cpu().numpy())
     P = np.concatenate([np.concatenate(probs[t]) for t in
                         ("arrhythmia", "mi", "conduction")], axis=1)
     Y = lm[idx]
 
-    thr = json.loads((run / "calibration_results.json").read_text(encoding="utf-8"))["thresholds"]
+    thr = cal["thresholds"]
     tau = np.array([thr.get(n, 0.5) for n in flat])
     pred = (P >= tau).astype(int)
 

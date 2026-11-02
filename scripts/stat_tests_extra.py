@@ -1,7 +1,7 @@
 """
 stat_tests_extra.py
 -------------------
-Paired tests for the post-hoc contrast arms, ARCH-13 and ARCH-14.
+Paired tests for the post-hoc contrast arms, ARCH-13, ARCH-14 and ARCH-15.
 
 stat_tests.py hard-codes the pre-registered family and must stay that way. The
 two new arms were added after the protocol was frozen, to answer one question -
@@ -16,6 +16,8 @@ explicit contrast scored higher":
   ARCH-10 - ARCH-13   full decoupling,    contrast on vs off
   ARCH-14 - ARCH-05   what the projections + heads add without the contrast
   ARCH-13 - ARCH-09   what the contrast_v2 token layout adds without the contrast
+  ARCH-12 - ARCH-15   partial decoupling, gate on vs off (contrast kept in both)
+  ARCH-15 - ARCH-14   partial decoupling, ungated contrast vs no contrast
 
 Same collection, Wilcoxon, bootstrap and seed list as stat_tests.py, imported
 rather than copied, so the numbers are comparable line for line.
@@ -43,6 +45,7 @@ if hasattr(sys.stdout, "reconfigure"):
 ARCH12 = "abl_arch12_partial"
 ARCH13 = "abl_arch13_nogate"
 ARCH14 = "abl_arch14_partial_nogate"
+ARCH15 = "abl_arch15_partial_ungated"
 
 # (without, with): compare() reports with - without.
 PAIRS = (
@@ -50,6 +53,8 @@ PAIRS = (
     ("ARCH-10 - ARCH-13 (decoupled: contrast on - off)", ARCH13, ARCH10),
     ("ARCH-14 - ARCH-05 (projection + heads, no contrast)", ARCH05, ARCH14),
     ("ARCH-13 - ARCH-09 (contrast_v2 layout, no contrast)", ARCH09, ARCH13),
+    ("ARCH-12 - ARCH-15 (partial: gate on - off)", ARCH15, ARCH12),
+    ("ARCH-15 - ARCH-14 (partial: ungated contrast - none)", ARCH14, ARCH15),
 )
 METRICS = ("auprc/mi/IMI", "auprc/mi/ILMI", "auprc/mi/ASMI", "auprc/mi/AMI",
            "auprc/mi/macro", "S/composite")
@@ -97,7 +102,7 @@ def main() -> None:
         rng = random.Random(BOOTSTRAP_SEED)
         if metric == METRICS[0]:
             lines += ["## Arms found", ""]
-            for exp_id in (ARCH05, ARCH09, ARCH10, ARCH12, ARCH13, ARCH14):
+            for exp_id in (ARCH05, ARCH09, ARCH10, ARCH12, ARCH13, ARCH14, ARCH15):
                 seeds = sorted(data.get(exp_id, {}))
                 missing = [s for s in SEEDS if s not in seeds]
                 vals = [data[exp_id][s][0] for s in seeds] if seeds else []

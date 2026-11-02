@@ -82,3 +82,45 @@ Kết quả chính lặp lại gần như nguyên vẹn trên phần cứng khá
   (+0,040, p = 0,002).
 - Phụ lục về tái lập (tuỳ chọn): các số ở mục 3.
 
+## 5. ARCH-15: bỏ cổng, giữ khối đối lập (box C, 5070 Ti, 29/10/2026)
+
+ARCH-15 = ARCH-12, nhưng c̃ = c + W_p δ + b_p (không có σ(W_g ·)). Ít hơn ARCH-12 65.792 tham số.
+Box C chạy 10 seed ARCH-15 và chạy lại 10 seed ARCH-12 để cặp "cổng bật/tắt" nằm trong cùng
+một máy. Kết quả: `checkpoints/box_5070ti_c/`, bảng đầy đủ:
+- `docs/stat_tests_gate_5070ti_c.md`: trong box C
+- `docs/stat_tests_gate_crossbox_BC.md`: thêm ARCH-14 của box B
+
+| Cặp (IMI AUPRC, validation) | Δ | 95% CI | thắng | p | máy |
+|---|---|---|---|---|---|
+| ARCH-12 − ARCH-15 (cổng bật − tắt) | +0,0002 | [−0,0065; +0,0067] | 5/10 | 1,000 | cùng box C |
+| ARCH-15 − ARCH-14 (đối lập không cổng − không đối lập) | +0,0358 | [+0,026; +0,046] | 10/10 | 0,002 | C vs B |
+| ARCH-12 − ARCH-14 (đối lập có cổng − không đối lập) | +0,0359 | [+0,025; +0,046] | 9/10 | 0,004 | C vs B |
+
+Các chỉ số khác của ARCH-12 − ARCH-15 (cùng box C) đều không có ý nghĩa thống kê:
+- ILMI −0,012 (p 0,23)
+- ASMI +0,003
+- AMI +0,013 (p 0,23)
+- MI macro +0,001
+- S/composite +0,005 (CI [0,000; +0,010], p 0,11)
+
+Độ lệch ARCH-12 giữa box B và box C, IMI AUPRC, so từng seed:
+- trung bình −0,0015, lớn nhất 0,0058
+- S/composite trung bình +0,0001
+
+Độ lệch này nhỏ hơn hiệu ứng 0,036 khoảng 6 lần, nên cặp ARCH-15 − ARCH-14 khác máy vẫn tin được.
+Cặp này có một điểm phụ: AMI −0,031 (p 0,027, 1/10). AMI chỉ có rất ít ca dương tính và lệch
+giữa hai máy khá lớn, nên chỉ ghi lại, không diễn giải.
+
+**Kết luận:**
+- Cổng không đóng góp gì. Toàn bộ mức tăng IMI ở nhánh tách một phần đến từ phép chiếu hiệu
+  W_p δ.
+- Điều này khớp với kết quả kiểm tra cổng trước đó:
+  - b_g ≈ −2, nên cổng gần như cố định quanh 0,1–0,17, tức là một hệ số co gần như hằng số
+  - W_p học được để bù lại hệ số này
+
+**Đưa vào bài:**
+- §3.5 không được nói cổng chọn lọc theo chiều hay là thành phần then chốt.
+- Viết "khối đối lập anh em (sibling contrast)". Cổng ghi là chi tiết hiện thực, kèm một câu
+  ablation: "Removing the sigmoid gate (ARCH-15) leaves IMI AUPRC unchanged (Δ = +0.0002,
+  p = 1.0, same hardware); the gain is carried by the projected sibling difference."
+- Thêm hàng ARCH-15 vào bảng khảo sát kiến trúc, ghi rõ chạy trên 5070 Ti, sau khi chốt giao thức.

@@ -308,7 +308,8 @@ class ContrastMIHead(MIHead):
     """
 
     def __init__(self, shared_dim: int, branch_dim: int, dropout: float,
-                 use_cross_attention: bool = False, use_contrast: bool = True) -> None:
+                 use_cross_attention: bool = False, use_contrast: bool = True,
+                 contrast_gated: bool = True) -> None:
         super().__init__(shared_dim=shared_dim, branch_dim=branch_dim,
                          dropout=dropout, use_cross_attention=use_cross_attention)
         imi_in, asmi_in, ilmi_in, ami_in = self.label_in_dims
@@ -321,10 +322,11 @@ class ContrastMIHead(MIHead):
         # Same pairs and same gated mechanism as contrast_v2 under decoupled routing.
         # use_contrast=False (ARCH-14) keeps the projections and heads and drops
         # only these two modules, so ARCH-12 vs ARCH-14 isolates the contrast.
+        # contrast_gated=False (ARCH-15) keeps the modules but removes their gate.
         self.use_contrast = use_contrast
         if use_contrast:
-            self.inf_contrast = SiblingContrast(branch_dim)
-            self.ant_contrast = SiblingContrast(branch_dim)
+            self.inf_contrast = SiblingContrast(branch_dim, gated=contrast_gated)
+            self.ant_contrast = SiblingContrast(branch_dim, gated=contrast_gated)
 
         # Replace the inherited heads: they now read the contrast-refined vectors.
         self.imi_head  = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
@@ -466,16 +468,24 @@ class SiblingContrast(nn.Module):
     the hard symmetric subtraction impoverishing the "extended" sibling.
     """
 
-    def __init__(self, dim: int) -> None:
+    def __init__(self, dim: int, gated: bool = True) -> None:
         super().__init__()
-        self.gate = nn.Linear(2 * dim, dim)
+        # gated=False (ARCH-15) drops the gate and keeps the zero-initialised
+        # projection: out = x + proj(x - sibling). Tests whether the gate itself
+        # matters, given that trained gates stay near their initial value.
+        self.gated = gated
+        if gated:
+            self.gate = nn.Linear(2 * dim, dim)
         self.proj = nn.Linear(dim, dim)
         nn.init.zeros_(self.proj.weight)
         nn.init.zeros_(self.proj.bias)
-        nn.init.constant_(self.gate.bias, -2.0)  # start with small gate (~0.12)
+        if gated:
+            nn.init.constant_(self.gate.bias, -2.0)  # start with small gate (~0.12)
 
     def forward(self, x: torch.Tensor, sibling: torch.Tensor) -> torch.Tensor:
         delta = x - sibling
+        if not self.gated:
+            return x + self.proj(delta)
         g = torch.sigmoid(self.gate(torch.cat([x, delta], dim=-1)))
         return x + g * self.proj(delta)
 
@@ -1101,15 +1111,17 @@ class ECGMultiTaskModel(nn.Module):
                 dropout=dropout,
                 cd_lead_dim=cd_lead_dim,
             )
-        elif mi_head_mode in ("contrast_shared", "contrast_shared_nogate"):
+        elif mi_head_mode in ("contrast_shared", "contrast_shared_nogate", "contrast_shared_ungated"):
             # MC2: gated contrast on top of the shared backbone, no decoupling.
             # Inherits MIHead's feature path, cross-attention included, so this
             # differs from the shared baseline by the contrast alone.
             # contrast_shared_nogate (ARCH-14): same head minus the contrast.
+            # contrast_shared_ungated (ARCH-15): contrast kept, gate removed.
             self.mi_head = ContrastMIHead(
                 shared_dim=shared_dim, branch_dim=mi_branch_dim, dropout=dropout,
                 use_cross_attention=use_cross_attention,
                 use_contrast=(mi_head_mode != "contrast_shared_nogate"),
+                contrast_gated=(mi_head_mode != "contrast_shared_ungated"),
             )
             self.conduction_head = ConductionHead(
                 shared_dim=shared_dim,

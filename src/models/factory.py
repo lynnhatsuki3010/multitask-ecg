@@ -11,6 +11,7 @@ from src.models.backbones import (
     HybridTransformerBackbone,
     MultiBranchTransformerBackbone,
 )
+from src.models.baselines import ECGTransFormBackbone
 from src.models.ecg_multitask import ECGMIModel, ECGMultiTaskModel
 
 
@@ -108,6 +109,23 @@ def build_model(
             cond_ffn=model_cfg.get("cond_ffn"),
             cd_lead_out_dim=int(model_cfg.get("cd_lead_out_dim", 128)),
         )
+    elif architecture == "ecgtransform":
+        # MC3 baseline. Swaps only the backbone, so heads/loss/metrics are the
+        # ones the proposed model is scored with. See src/models/baselines.py
+        # for the deviations that have to be reported.
+        backbone = ECGTransFormBackbone(
+            num_leads=cfg["dataset"]["num_leads"],
+            mid_channels=int(model_cfg.get("mid_channels", 32)),
+            final_out_channels=int(model_cfg.get("final_out_channels", 128)),
+            stride=int(model_cfg.get("stride", 10)),
+            num_heads=int(model_cfg.get("nhead", 8)),
+            num_transformer_layers=int(model_cfg.get("num_encoder_layers", 3)),
+            num_crm_blocks=int(model_cfg.get("num_crm_blocks", 3)),
+            dropout=dropout,
+            input_length=int(cfg["dataset"]["sampling_rate"]
+                             * cfg["dataset"].get("duration_seconds", 10)),
+            width_mult=float(model_cfg.get("width_mult", 1.0)),
+        )
     elif architecture == "mi_only":
         mi_branch_dim = int(model_cfg.get("mi_branch_dim", 128))
         return ECGMIModel(
@@ -119,7 +137,7 @@ def build_model(
         raise ValueError(
             f"Unsupported model.architecture='{architecture}'. "
             "Use 'cnn', 'hybrid_transformer', 'multi_branch_transformer', "
-            "'decoupled_multitask', or 'mi_only'."
+            "'decoupled_multitask', 'ecgtransform', or 'mi_only'."
         )
 
     head_hidden_dim = int(model_cfg.get("head_hidden_dim", d_model // 2))

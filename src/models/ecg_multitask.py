@@ -223,6 +223,23 @@ class MIHead(nn.Module):
         ilmi_tokens = self.ilmi_token_pool(sequence_features)
         ami_tokens  = self.ami_token_pool(sequence_features)
 
+        inferior, reciprocal, anterior, lateral, anterior6 = self._region_vectors(
+            signal, shared_features)
+
+        return (
+            torch.cat([shared_features, imi_tokens,  inferior, reciprocal],           dim=-1),
+            torch.cat([shared_features, asmi_tokens, anterior],                       dim=-1),
+            torch.cat([shared_features, ilmi_tokens, inferior, reciprocal, lateral],  dim=-1),
+            torch.cat([shared_features, ami_tokens,  anterior6],                      dim=-1),
+        )
+
+    def _region_vectors(
+        self,
+        signal: torch.Tensor,
+        shared_features: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """One vector per anatomical lead group: inferior, reciprocal, anterior,
+        lateral, anterior6."""
         if self.use_cross_attention:
             _, inf_seq  = self.inferior_encoder(signal[:, INFERIOR_LEADS, :],   return_sequence=True)
             _, rec_seq  = self.reciprocal_encoder(signal[:, RECIPROCAL_LEADS, :], return_sequence=True)
@@ -252,12 +269,7 @@ class MIHead(nn.Module):
             lateral    = self.lateral_encoder(signal[:, LATERAL_LEADS, :])
             anterior6  = self.anterior6_encoder(signal[:, ANTERIOR6_LEADS, :])
 
-        return (
-            torch.cat([shared_features, imi_tokens,  inferior, reciprocal],           dim=-1),
-            torch.cat([shared_features, asmi_tokens, anterior],                       dim=-1),
-            torch.cat([shared_features, ilmi_tokens, inferior, reciprocal, lateral],  dim=-1),
-            torch.cat([shared_features, ami_tokens,  anterior6],                      dim=-1),
-        )
+        return inferior, reciprocal, anterior, lateral, anterior6
 
     def forward(
         self,
@@ -367,6 +379,120 @@ class ContrastMIHead(MIHead):
             self.ilmi_head(ilmi_ref),
             self.ami_head(ami_ref),
         ], dim=-1)
+
+
+class ClusterMIHead(ContrastMIHead):
+    """Partial decoupling with the contrast_v2 clustered token layout.
+
+    The two routes to the IMI gain were each tested in one routing only: the
+    clustered layout under full decoupling (ARCH-13), the sibling difference
+    under partial decoupling (ARCH-12). This head puts the layout into the
+    partial-decoupling model, so the 2x2 can be completed there too:
+
+      ARCH-14  neither            ARCH-12  contrast only
+      ARCH-17  layout only        ARCH-18  layout + contrast
+
+    Against ContrastMIHead the only change is the anatomical part of each
+    label's feature vector. MIHead concatenates a fixed per-label subset of
+    region vectors (IMI never receives the lateral one). Here, as in
+    contrast_v2, the region vectors become tokens of two clusters -
+    [inferior, reciprocal, lateral, inferolateral] and [anterior, lateral,
+    anterior6] - each run through one transformer layer, and every label pools
+    its whole cluster with its own query. Shared features, label tokens,
+    projection, contrast and heads are the inherited ones.
+    """
+
+    INFEROLATERAL_LEADS = INFERIOR_LEADS + RECIPROCAL_LEADS + LATERAL_LEADS
+
+    def __init__(self, shared_dim: int, branch_dim: int, dropout: float,
+                 use_cross_attention: bool = False, use_contrast: bool = True) -> None:
+        super().__init__(shared_dim=shared_dim, branch_dim=branch_dim, dropout=dropout,
+                         use_cross_attention=use_cross_attention,
+                         use_contrast=use_contrast, contrast_gated=True)
+
+        # The joint inferolateral region token contrast_v2 adds for ILMI.
+        self.inferolateral_encoder = LeadGroupEncoder(
+            len(self.INFEROLATERAL_LEADS), branch_dim, dropout)
+        if use_cross_attention:
+            self.cross_attn_inferolateral = nn.MultiheadAttention(
+                embed_dim=shared_dim, num_heads=4, batch_first=True, dropout=dropout)
+            self.proj_k_infl = nn.Conv1d(branch_dim, shared_dim, kernel_size=1)
+
+        # Region vectors come out at different widths (shared_dim under
+        # cross-attention, branch_dim or branch_dim // 2 without); bring each
+        # to branch_dim so they can be tokens of one sequence.
+        rd = shared_dim if use_cross_attention else branch_dim
+        self.region_in = nn.ModuleDict({
+            "inferior": nn.Linear(rd, branch_dim),
+            "reciprocal": nn.Linear(shared_dim if use_cross_attention else branch_dim // 2,
+                                    branch_dim),
+            "anterior": nn.Linear(rd, branch_dim),
+            "lateral": nn.Linear(rd, branch_dim),
+            "anterior6": nn.Linear(rd, branch_dim),
+            "inferolateral": nn.Linear(rd, branch_dim),
+        })
+
+        def _group_tf() -> nn.TransformerEncoder:
+            layer = nn.TransformerEncoderLayer(
+                d_model=branch_dim, nhead=4, dim_feedforward=branch_dim * 2,
+                dropout=dropout, batch_first=True, norm_first=True,
+            )
+            return nn.TransformerEncoder(layer, num_layers=1)
+
+        self.inferior_region_tf = _group_tf()   # [inferior, reciprocal, lateral, inferolateral]
+        self.anterior_region_tf = _group_tf()   # [anterior, lateral, anterior6]
+        self.imi_cluster_pool  = TaskTokenPooling(branch_dim, dropout)
+        self.asmi_cluster_pool = TaskTokenPooling(branch_dim, dropout)
+        self.ilmi_cluster_pool = TaskTokenPooling(branch_dim, dropout)
+        self.ami_cluster_pool  = TaskTokenPooling(branch_dim, dropout)
+
+        # Every label now carries the same width: shared + label token + cluster context.
+        in_dim = shared_dim * 2 + branch_dim
+        self.label_in_dims = (in_dim,) * 4
+        self.imi_proj  = nn.Linear(in_dim, branch_dim)
+        self.asmi_proj = nn.Linear(in_dim, branch_dim)
+        self.ilmi_proj = nn.Linear(in_dim, branch_dim)
+        self.ami_proj  = nn.Linear(in_dim, branch_dim)
+
+    def _inferolateral_vector(self, signal: torch.Tensor,
+                              shared_features: torch.Tensor) -> torch.Tensor:
+        x = signal[:, self.INFEROLATERAL_LEADS, :]
+        if not self.use_cross_attention:
+            return self.inferolateral_encoder(x)
+        _, seq = self.inferolateral_encoder(x, return_sequence=True)
+        seq = self.proj_k_infl(seq).transpose(1, 2)
+        out, _ = self.cross_attn_inferolateral(shared_features.unsqueeze(1), seq, seq)
+        return out.squeeze(1)
+
+    def _label_features(
+        self,
+        signal: torch.Tensor,
+        shared_features: torch.Tensor,
+        sequence_features: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        imi_tokens  = self.imi_token_pool(sequence_features)
+        asmi_tokens = self.asmi_token_pool(sequence_features)
+        ilmi_tokens = self.ilmi_token_pool(sequence_features)
+        ami_tokens  = self.ami_token_pool(sequence_features)
+
+        inferior, reciprocal, anterior, lateral, anterior6 = self._region_vectors(
+            signal, shared_features)
+        inferolat = self._inferolateral_vector(signal, shared_features)
+        r = self.region_in
+
+        inf_tokens = torch.stack([r["inferior"](inferior), r["reciprocal"](reciprocal),
+                                  r["lateral"](lateral), r["inferolateral"](inferolat)], dim=1)
+        inf_tokens = self.inferior_region_tf(inf_tokens)
+        ant_tokens = torch.stack([r["anterior"](anterior), r["lateral"](lateral),
+                                  r["anterior6"](anterior6)], dim=1)
+        ant_tokens = self.anterior_region_tf(ant_tokens)
+
+        return (
+            torch.cat([shared_features, imi_tokens,  self.imi_cluster_pool(inf_tokens)],  dim=-1),
+            torch.cat([shared_features, asmi_tokens, self.asmi_cluster_pool(ant_tokens)], dim=-1),
+            torch.cat([shared_features, ilmi_tokens, self.ilmi_cluster_pool(inf_tokens)], dim=-1),
+            torch.cat([shared_features, ami_tokens,  self.ami_cluster_pool(ant_tokens)],  dim=-1),
+        )
 
 
 class SubsetLeadMIHead(nn.Module):
@@ -698,6 +824,12 @@ class DecoupledSubsetMIHead(nn.Module):
                        encoder for each extended sibling (anterior6 V1-V6 for AMI,
                        inferolateral for ILMI) as an extra region token, and (b) uses
                        a gated contrast (identity at init) instead of hard subtraction.
+      - "shared_contrast": ARCH-16. The "shared" layout (IMI still never sees the
+                       lateral leads) plus the contrast_v2 gated sibling contrast.
+                       With ARCH-09 ("shared"), ARCH-13 ("contrast_v2_nogate") and
+                       ARCH-10 ("contrast_v2") it completes the layout x contrast
+                       2x2 under full decoupling. Here the lateral evidence can reach
+                       the IMI head only through the difference with the ILMI context.
     """
 
     INFEROLATERAL_LEADS = INFERIOR_LEADS + RECIPROCAL_LEADS + LATERAL_LEADS
@@ -773,6 +905,9 @@ class DecoupledSubsetMIHead(nn.Module):
             self.asmi_group_tf = _group_tf()
             self.ilmi_group_tf = _group_tf()
             self.ami_group_tf  = _group_tf()
+            if head_mode == "shared_contrast":
+                self.inf_contrast = SiblingContrast(branch_dim)
+                self.ant_contrast = SiblingContrast(branch_dim)
 
     def _group_nodes(
         self,
@@ -823,6 +958,12 @@ class DecoupledSubsetMIHead(nn.Module):
         ilmi_ctx = self.ilmi_pool(self.ilmi_group_tf(self._group_nodes(inferior, reciprocal, lateral)))
         asmi_ctx = self.asmi_pool(self.asmi_group_tf(anterior.unsqueeze(1)))
         ami_ctx  = self.ami_pool(self.ami_group_tf(anterior6.unsqueeze(1)))
+
+        if self.head_mode == "shared_contrast":
+            imi_ctx, ilmi_ctx = (self.inf_contrast(imi_ctx, ilmi_ctx),
+                                 self.inf_contrast(ilmi_ctx, imi_ctx))
+            asmi_ctx, ami_ctx = (self.ant_contrast(asmi_ctx, ami_ctx),
+                                 self.ant_contrast(ami_ctx, asmi_ctx))
 
         imi  = self.imi_head(imi_ctx)
         asmi = self.asmi_head(asmi_ctx)
@@ -1122,6 +1263,22 @@ class ECGMultiTaskModel(nn.Module):
                 use_cross_attention=use_cross_attention,
                 use_contrast=(mi_head_mode != "contrast_shared_nogate"),
                 contrast_gated=(mi_head_mode != "contrast_shared_ungated"),
+            )
+            self.conduction_head = ConductionHead(
+                shared_dim=shared_dim,
+                num_conduction_labels=num_conduction_labels,
+                hidden_dim=head_hidden_dim,
+                dropout=dropout,
+                cd_lead_dim=cd_lead_dim,
+            )
+        elif mi_head_mode in ("cluster_shared", "cluster_shared_nogate"):
+            # Clustered token layout on the shared backbone.
+            # cluster_shared_nogate (ARCH-17): layout only, no contrast.
+            # cluster_shared (ARCH-18): layout + gated contrast.
+            self.mi_head = ClusterMIHead(
+                shared_dim=shared_dim, branch_dim=mi_branch_dim, dropout=dropout,
+                use_cross_attention=use_cross_attention,
+                use_contrast=(mi_head_mode == "cluster_shared"),
             )
             self.conduction_head = ConductionHead(
                 shared_dim=shared_dim,

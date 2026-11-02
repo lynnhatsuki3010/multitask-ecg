@@ -16,8 +16,10 @@ Probabilities are temperature-scaled with T_mi from calibration_results.json.
 
 Usage:
   python scripts/24_sibling_occlusion.py results/sibling_occlusion_test.csv
+  python scripts/24_sibling_occlusion.py out.csv --runs "checkpoints/box_x/run_*" \
+      --arm ARCH-16=abl_arch16_decoupled_contrast --arm ARCH-09=abl_arch09_decoupled
 """
-import glob, json, sys
+import argparse, glob, json, sys
 from pathlib import Path
 import numpy as np, pandas as pd, torch, yaml
 ROOT = Path(__file__).resolve().parent.parent; sys.path.insert(0, str(ROOT))
@@ -58,9 +60,19 @@ def auc(pos_scores, neg_scores):
                          np.r_[pos_scores, neg_scores])
 
 
+ap = argparse.ArgumentParser()
+ap.add_argument("out")
+ap.add_argument("--runs", default="checkpoints/run_*",
+                help="run-folder glob relative to the repo root; the arm pattern is appended")
+ap.add_argument("--arm", action="append", default=None, metavar="NAME=EXP_ID",
+                help="arm to score; repeat. Default: ARCH-05/09/10/12")
+args = ap.parse_args()
+if args.arm:
+    ARMS = dict(a.split("=", 1) for a in args.arm)
+
 rows = []
 for arm, pat in ARMS.items():
-    for rp in sorted(glob.glob(str(ROOT / f"checkpoints/run_*{pat}-*"))):
+    for rp in sorted(glob.glob(str(ROOT / f"{args.runs}{pat}-*"))):
         r = Path(rp)
         cfg = yaml.safe_load((r / "config_snapshot.yaml").read_text(encoding="utf-8"))
         cfg["hrv"] = {"enabled": False}
@@ -115,4 +127,4 @@ for arm, pat in ARMS.items():
             add(f"test_auprc/{n}", average_precision_score(y[n], s0[n]))
         print(arm, seed, "done", flush=True)
 
-out = Path(sys.argv[1]); pd.DataFrame(rows).to_csv(out, index=False); print("saved", out)
+out = Path(args.out); pd.DataFrame(rows).to_csv(out, index=False); print("saved", out)

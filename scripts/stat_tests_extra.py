@@ -19,6 +19,18 @@ explicit contrast scored higher":
   ARCH-12 - ARCH-15   partial decoupling, gate on vs off (contrast kept in both)
   ARCH-15 - ARCH-14   partial decoupling, ungated contrast vs no contrast
 
+ARCH-16/17/18 complete the layout x contrast 2x2 in both routings, so the
+remaining pairs are oriented "the arm WITH the added factor":
+
+  full decoupling     ARCH-09 none   ARCH-13 layout   ARCH-16 contrast   ARCH-10 both
+  partial decoupling  ARCH-14 none   ARCH-17 layout   ARCH-12 contrast   ARCH-18 both
+
+  ARCH-16 - ARCH-09   decoupled, contrast without the layout
+  ARCH-10 - ARCH-16   decoupled, layout on top of the contrast
+  ARCH-17 - ARCH-14   partial, layout without the contrast
+  ARCH-18 - ARCH-17   partial, contrast on top of the layout
+  ARCH-18 - ARCH-12   partial, layout on top of the contrast
+
 Same collection, Wilcoxon, bootstrap and seed list as stat_tests.py, imported
 rather than copied, so the numbers are comparable line for line.
 
@@ -46,6 +58,10 @@ ARCH12 = "abl_arch12_partial"
 ARCH13 = "abl_arch13_nogate"
 ARCH14 = "abl_arch14_partial_nogate"
 ARCH15 = "abl_arch15_partial_ungated"
+ARCH16 = "abl_arch16_decoupled_contrast"
+ARCH17 = "abl_arch17_partial_cluster"
+ARCH18 = "abl_arch18_partial_cluster_contrast"
+ALL_ARMS = (ARCH05, ARCH09, ARCH10, ARCH12, ARCH13, ARCH14, ARCH15, ARCH16, ARCH17, ARCH18)
 
 # (without, with): compare() reports with - without.
 PAIRS = (
@@ -55,6 +71,11 @@ PAIRS = (
     ("ARCH-13 - ARCH-09 (contrast_v2 layout, no contrast)", ARCH09, ARCH13),
     ("ARCH-12 - ARCH-15 (partial: gate on - off)", ARCH15, ARCH12),
     ("ARCH-15 - ARCH-14 (partial: ungated contrast - none)", ARCH14, ARCH15),
+    ("ARCH-16 - ARCH-09 (decoupled: contrast, no layout)", ARCH09, ARCH16),
+    ("ARCH-10 - ARCH-16 (decoupled: layout on top of contrast)", ARCH16, ARCH10),
+    ("ARCH-17 - ARCH-14 (partial: layout, no contrast)", ARCH14, ARCH17),
+    ("ARCH-18 - ARCH-17 (partial: contrast on top of layout)", ARCH17, ARCH18),
+    ("ARCH-18 - ARCH-12 (partial: layout on top of contrast)", ARCH12, ARCH18),
 )
 METRICS = ("auprc/mi/IMI", "auprc/mi/ILMI", "auprc/mi/ASMI", "auprc/mi/AMI",
            "auprc/mi/macro", "S/composite")
@@ -89,7 +110,8 @@ def main() -> None:
              f"Run folders: {', '.join(f'`{g}`' for g in globs)}", "",
              "Post-hoc: added after the protocol was frozen. No Holm correction; "
              "report as descriptive evidence.",
-             "Positive delta = the arm WITH the explicit gated contrast is higher.",
+             "Positive delta = the arm WITH the added factor (contrast, gate or layout, "
+             "as each pair's label says) is higher.",
              f"Bootstrap seed {BOOTSTRAP_SEED}.", ""]
 
     summary = ["## Summary", "",
@@ -102,7 +124,7 @@ def main() -> None:
         rng = random.Random(BOOTSTRAP_SEED)
         if metric == METRICS[0]:
             lines += ["## Arms found", ""]
-            for exp_id in (ARCH05, ARCH09, ARCH10, ARCH12, ARCH13, ARCH14, ARCH15):
+            for exp_id in ALL_ARMS:
                 seeds = sorted(data.get(exp_id, {}))
                 missing = [s for s in SEEDS if s not in seeds]
                 vals = [data[exp_id][s][0] for s in seeds] if seeds else []

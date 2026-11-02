@@ -8,7 +8,7 @@ routing_mode (model config):
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
@@ -202,17 +202,22 @@ class MIHead(nn.Module):
             ilmi_in = shared_dim * 2 + branch_dim + branch_dim // 2 + branch_dim
             ami_in  = shared_dim * 2 + branch_dim
 
+        # Kept as an attribute so ContrastMIHead can size its projections without
+        # duplicating the (cross-attention dependent) width arithmetic.
+        self.label_in_dims = (imi_in, asmi_in, ilmi_in, ami_in)
+
         self.imi_head  = MLPHead(imi_in,  1, hidden_dim=branch_dim, dropout=dropout)
         self.asmi_head = MLPHead(asmi_in, 1, hidden_dim=branch_dim, dropout=dropout)
         self.ilmi_head = MLPHead(ilmi_in, 1, hidden_dim=branch_dim, dropout=dropout)
         self.ami_head  = MLPHead(ami_in,  1, hidden_dim=branch_dim, dropout=dropout)
 
-    def forward(
+    def _label_features(
         self,
         signal: torch.Tensor,
         shared_features: torch.Tensor,
         sequence_features: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Per-label feature vectors, before the classifier heads."""
         imi_tokens  = self.imi_token_pool(sequence_features)
         asmi_tokens = self.asmi_token_pool(sequence_features)
         ilmi_tokens = self.ilmi_token_pool(sequence_features)
@@ -247,11 +252,107 @@ class MIHead(nn.Module):
             lateral    = self.lateral_encoder(signal[:, LATERAL_LEADS, :])
             anterior6  = self.anterior6_encoder(signal[:, ANTERIOR6_LEADS, :])
 
-        imi  = self.imi_head(torch.cat([shared_features, imi_tokens,  inferior, reciprocal],          dim=-1))
-        asmi = self.asmi_head(torch.cat([shared_features, asmi_tokens, anterior],                     dim=-1))
-        ilmi = self.ilmi_head(torch.cat([shared_features, ilmi_tokens, inferior, reciprocal, lateral], dim=-1))
-        ami  = self.ami_head(torch.cat([shared_features,  ami_tokens,  anterior6],                    dim=-1))
-        return torch.cat([imi, asmi, ilmi, ami], dim=-1)
+        return (
+            torch.cat([shared_features, imi_tokens,  inferior, reciprocal],           dim=-1),
+            torch.cat([shared_features, asmi_tokens, anterior],                       dim=-1),
+            torch.cat([shared_features, ilmi_tokens, inferior, reciprocal, lateral],  dim=-1),
+            torch.cat([shared_features, ami_tokens,  anterior6],                      dim=-1),
+        )
+
+    def forward(
+        self,
+        signal: torch.Tensor,
+        shared_features: torch.Tensor,
+        sequence_features: torch.Tensor,
+    ) -> torch.Tensor:
+        imi_f, asmi_f, ilmi_f, ami_f = self._label_features(
+            signal, shared_features, sequence_features)
+        return torch.cat([
+            self.imi_head(imi_f),
+            self.asmi_head(asmi_f),
+            self.ilmi_head(ilmi_f),
+            self.ami_head(ami_f),
+        ], dim=-1)
+
+
+class ContrastMIHead(MIHead):
+    """Partial decoupling: shared backbone + per-region encoders + gated contrast.
+
+    Review-2 MC2 asks whether full decoupling is really the minimal condition for
+    the gated sibling contrast, or whether a much cheaper shared-backbone model
+    can host the same mechanism. The paper currently asserts the former
+    ("mi_head_mode is only available under decoupled routing"), and that
+    assertion is what this head exists to test.
+
+    Subclasses MIHead so that everything up to the classifier - shared features,
+    anatomical LeadGroupEncoders on the raw signal, and the cross-attention
+    variant if enabled - is the *same code*, not a copy that could drift. Against
+    ARCH-05 this therefore changes exactly one thing, which is what the ablation
+    chain's one-knob-per-row discipline requires.
+
+    Added: a per-label projection into a common space, and the two
+    `SiblingContrast` gates. The projection is part of the mechanism rather than
+    a convenience - in MIHead each label's vector is a concatenation of different
+    widths (IMI carries inferior + reciprocal, ILMI also carries lateral), and a
+    difference is only meaningful between vectors in one space.
+
+    Cost: roughly `sum(label_in_dims) * branch_dim` extra parameters, against the
+    several million that full decoupling adds.
+
+    Reading the result:
+      - if this recovers ARCH-10's IMI gain, the "fully decoupled architecture is
+        a necessary condition" contribution does not survive, and the cheap model
+        is the better recommendation;
+      - if it does not, the paper's condition claim rests on evidence instead of
+        on construction, which is strictly stronger than today.
+    """
+
+    def __init__(self, shared_dim: int, branch_dim: int, dropout: float,
+                 use_cross_attention: bool = False) -> None:
+        super().__init__(shared_dim=shared_dim, branch_dim=branch_dim,
+                         dropout=dropout, use_cross_attention=use_cross_attention)
+        imi_in, asmi_in, ilmi_in, ami_in = self.label_in_dims
+
+        self.imi_proj  = nn.Linear(imi_in,  branch_dim)
+        self.asmi_proj = nn.Linear(asmi_in, branch_dim)
+        self.ilmi_proj = nn.Linear(ilmi_in, branch_dim)
+        self.ami_proj  = nn.Linear(ami_in,  branch_dim)
+
+        # Same pairs and same gated mechanism as contrast_v2 under decoupled routing.
+        self.inf_contrast = SiblingContrast(branch_dim)
+        self.ant_contrast = SiblingContrast(branch_dim)
+
+        # Replace the inherited heads: they now read the contrast-refined vectors.
+        self.imi_head  = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
+        self.asmi_head = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
+        self.ilmi_head = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
+        self.ami_head  = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
+
+    def forward(
+        self,
+        signal: torch.Tensor,
+        shared_features: torch.Tensor,
+        sequence_features: torch.Tensor,
+    ) -> torch.Tensor:
+        imi_f, asmi_f, ilmi_f, ami_f = self._label_features(
+            signal, shared_features, sequence_features)
+
+        imi_ctx  = self.imi_proj(imi_f)
+        asmi_ctx = self.asmi_proj(asmi_f)
+        ilmi_ctx = self.ilmi_proj(ilmi_f)
+        ami_ctx  = self.ami_proj(ami_f)
+
+        imi_ref  = self.inf_contrast(imi_ctx,  ilmi_ctx)
+        ilmi_ref = self.inf_contrast(ilmi_ctx, imi_ctx)
+        asmi_ref = self.ant_contrast(asmi_ctx, ami_ctx)
+        ami_ref  = self.ant_contrast(ami_ctx,  asmi_ctx)
+
+        return torch.cat([
+            self.imi_head(imi_ref),
+            self.asmi_head(asmi_ref),
+            self.ilmi_head(ilmi_ref),
+            self.ami_head(ami_ref),
+        ], dim=-1)
 
 
 class SubsetLeadMIHead(nn.Module):
@@ -964,6 +1065,21 @@ class ECGMultiTaskModel(nn.Module):
         elif routing_mode == "subset_lead":
             self.mi_head = SubsetLeadMIHead(
                 shared_dim=shared_dim, branch_dim=mi_branch_dim, dropout=dropout,
+            )
+            self.conduction_head = ConductionHead(
+                shared_dim=shared_dim,
+                num_conduction_labels=num_conduction_labels,
+                hidden_dim=head_hidden_dim,
+                dropout=dropout,
+                cd_lead_dim=cd_lead_dim,
+            )
+        elif mi_head_mode == "contrast_shared":
+            # MC2: gated contrast on top of the shared backbone, no decoupling.
+            # Inherits MIHead's feature path, cross-attention included, so this
+            # differs from the shared baseline by the contrast alone.
+            self.mi_head = ContrastMIHead(
+                shared_dim=shared_dim, branch_dim=mi_branch_dim, dropout=dropout,
+                use_cross_attention=use_cross_attention,
             )
             self.conduction_head = ConductionHead(
                 shared_dim=shared_dim,

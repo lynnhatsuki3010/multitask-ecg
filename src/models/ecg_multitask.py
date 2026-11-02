@@ -308,7 +308,7 @@ class ContrastMIHead(MIHead):
     """
 
     def __init__(self, shared_dim: int, branch_dim: int, dropout: float,
-                 use_cross_attention: bool = False) -> None:
+                 use_cross_attention: bool = False, use_contrast: bool = True) -> None:
         super().__init__(shared_dim=shared_dim, branch_dim=branch_dim,
                          dropout=dropout, use_cross_attention=use_cross_attention)
         imi_in, asmi_in, ilmi_in, ami_in = self.label_in_dims
@@ -319,8 +319,12 @@ class ContrastMIHead(MIHead):
         self.ami_proj  = nn.Linear(ami_in,  branch_dim)
 
         # Same pairs and same gated mechanism as contrast_v2 under decoupled routing.
-        self.inf_contrast = SiblingContrast(branch_dim)
-        self.ant_contrast = SiblingContrast(branch_dim)
+        # use_contrast=False (ARCH-14) keeps the projections and heads and drops
+        # only these two modules, so ARCH-12 vs ARCH-14 isolates the contrast.
+        self.use_contrast = use_contrast
+        if use_contrast:
+            self.inf_contrast = SiblingContrast(branch_dim)
+            self.ant_contrast = SiblingContrast(branch_dim)
 
         # Replace the inherited heads: they now read the contrast-refined vectors.
         self.imi_head  = MLPHead(branch_dim, 1, hidden_dim=branch_dim, dropout=dropout)
@@ -341,6 +345,14 @@ class ContrastMIHead(MIHead):
         asmi_ctx = self.asmi_proj(asmi_f)
         ilmi_ctx = self.ilmi_proj(ilmi_f)
         ami_ctx  = self.ami_proj(ami_f)
+
+        if not self.use_contrast:
+            return torch.cat([
+                self.imi_head(imi_ctx),
+                self.asmi_head(asmi_ctx),
+                self.ilmi_head(ilmi_ctx),
+                self.ami_head(ami_ctx),
+            ], dim=-1)
 
         imi_ref  = self.inf_contrast(imi_ctx,  ilmi_ctx)
         ilmi_ref = self.inf_contrast(ilmi_ctx, imi_ctx)
@@ -714,7 +726,7 @@ class DecoupledSubsetMIHead(nn.Module):
             # Sibling contrast refinement (soft mutual exclusion within a region).
             self.inf_contrast = nn.Linear(branch_dim, branch_dim)
             self.ant_contrast = nn.Linear(branch_dim, branch_dim)
-        elif head_mode in ("contrast_v2", "dyn_anat_v2"):
+        elif head_mode in ("contrast_v2", "contrast_v2_nogate", "dyn_anat_v2"):
             self.inferior_encoder     = LeadGroupEncoder(len(INFERIOR_LEADS),         branch_dim,      dropout)
             self.reciprocal_encoder   = LeadGroupEncoder(len(RECIPROCAL_LEADS),       branch_dim // 2, dropout)
             self.lateral_encoder      = LeadGroupEncoder(len(LATERAL_LEADS),          branch_dim,      dropout)
@@ -725,9 +737,10 @@ class DecoupledSubsetMIHead(nn.Module):
             self.inferolateral_encoder = LeadGroupEncoder(len(self.INFEROLATERAL_LEADS), branch_dim,   dropout)
             self.inferior_region_tf = _group_tf()   # tokens: [inferior, reciprocal, lateral, inferolateral]
             self.anterior_region_tf = _group_tf()    # tokens: [anterior, lateral, anterior6]
-            # Gated contrast refinement (identity at init).
-            self.inf_contrast = SiblingContrast(branch_dim)
-            self.ant_contrast = SiblingContrast(branch_dim)
+            if head_mode != "contrast_v2_nogate":
+                # Gated contrast refinement (identity at init).
+                self.inf_contrast = SiblingContrast(branch_dim)
+                self.ant_contrast = SiblingContrast(branch_dim)
             if head_mode == "dyn_anat_v2":
                 # Phase 5: add a gated per-patient per-lead attention on TOP of the
                 # contrast_v2 joint encoders (starts as a no-op, ramps up if helpful).
@@ -766,7 +779,7 @@ class DecoupledSubsetMIHead(nn.Module):
     def forward(self, signal: torch.Tensor) -> torch.Tensor:
         if self.head_mode == "contrast":
             return self._forward_contrast(signal)
-        if self.head_mode == "contrast_v2":
+        if self.head_mode in ("contrast_v2", "contrast_v2_nogate"):
             return self._forward_contrast_v2(signal)
         if self.head_mode == "dyn_anat":
             return self._forward_dyn_anat(signal)
@@ -862,6 +875,21 @@ class DecoupledSubsetMIHead(nn.Module):
         ilmi_ctx = self.ilmi_pool(inf_tokens)
         asmi_ctx = self.asmi_pool(ant_tokens)
         ami_ctx  = self.ami_pool(ant_tokens)
+
+        if self.head_mode == "contrast_v2_nogate":
+            # Ablation isolating the contrast from everything else the
+            # contrast_v2 switch changes. Measured on the trained ARCH-10
+            # checkpoint, the gated contrast converged to a near-identity map:
+            # it perturbs each context vector by ~0.3% in relative L2 norm, and
+            # replacing it with the identity at inference moves validation IMI
+            # AUPRC by 0.0001. Yet flipping mi_head_mode from "shared" to
+            # "contrast_v2" is worth +0.040, because that one config key also
+            # rewrites the token layout: under "shared" ASMI sees a single
+            # anterior token and IMI sees two, while here every label attends
+            # over its whole cluster including the joint region token. This arm
+            # keeps that layout and drops only the contrast, so the ablation
+            # chain can attribute the gain to one or the other.
+            return imi_ctx, asmi_ctx, ilmi_ctx, ami_ctx
 
         # Gated contrast (identity at init -> ramps up only where helpful).
         imi_ref  = self.inf_contrast(imi_ctx,  ilmi_ctx)
@@ -1073,13 +1101,15 @@ class ECGMultiTaskModel(nn.Module):
                 dropout=dropout,
                 cd_lead_dim=cd_lead_dim,
             )
-        elif mi_head_mode == "contrast_shared":
+        elif mi_head_mode in ("contrast_shared", "contrast_shared_nogate"):
             # MC2: gated contrast on top of the shared backbone, no decoupling.
             # Inherits MIHead's feature path, cross-attention included, so this
             # differs from the shared baseline by the contrast alone.
+            # contrast_shared_nogate (ARCH-14): same head minus the contrast.
             self.mi_head = ContrastMIHead(
                 shared_dim=shared_dim, branch_dim=mi_branch_dim, dropout=dropout,
                 use_cross_attention=use_cross_attention,
+                use_contrast=(mi_head_mode != "contrast_shared_nogate"),
             )
             self.conduction_head = ConductionHead(
                 shared_dim=shared_dim,

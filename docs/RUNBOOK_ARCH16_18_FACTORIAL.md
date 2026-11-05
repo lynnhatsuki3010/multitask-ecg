@@ -73,6 +73,10 @@ có chênh lệch kiểu này. Cần ghi rõ trong bài.
 |---|---|---|
 | 2 × 5070 Ti | ~8 giờ | ~11–12 $ |
 | 4 × 5070 Ti | ~4 giờ | ~11–12 $ |
+| 4 × 5060 Ti (~0,46 $/giờ; cùng loại GPU với đợt chạy gốc 15/08) | ~6 giờ (khoảng 17 phút mỗi run) | ~3 $ |
+
+Máy 5060 Ti có thêm một lợi thế: ARCH-10/12/09 chạy lại trên máy này so trực tiếp được với run
+gốc trong bài, tức là có thêm một phép kiểm tra lặp lại trên cùng loại GPU.
 
 Lấy `<PORT>` và `<HOST>` ở nút **Connect** của instance.
 

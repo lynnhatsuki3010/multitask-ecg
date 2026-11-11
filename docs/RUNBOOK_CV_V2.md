@@ -44,7 +44,7 @@ Yêu cầu máy:
 ## 1. Môi trường (trên máy thuê)
 
 ```bash
-mkdir -p /workspace/logs && export PATH=/venv/main/bin:$PATH && pip install -q numpy==2.4.6 scipy==1.18.0 scikit-learn==1.9.0 wfdb pandas neurokit2 matplotlib tqdm PyYAML optuna iterative-stratification awscli && pip install -q numpy==2.4.6 scipy==1.18.0 scikit-learn==1.9.0 && python -c "import torch,numpy,scipy,sklearn,wfdb,neurokit2;print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0), torch.cuda.device_count(), numpy.__version__, scipy.__version__, sklearn.__version__)"
+mkdir -p /workspace/logs && export PATH=/venv/main/bin:$PATH && pip install -q numpy==2.4.6 scipy==1.18.0 scikit-learn==1.9.0 pandas==2.3.2 wfdb neurokit2 matplotlib tqdm PyYAML optuna iterative-stratification awscli && pip install -q numpy==2.4.6 scipy==1.18.0 scikit-learn==1.9.0 && python -c "import torch,numpy,scipy,sklearn,wfdb,neurokit2;print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0), torch.cuda.device_count(), numpy.__version__, scipy.__version__, sklearn.__version__)"
 ```
 
 Phải in `2.11.0+cu128 12.8 <tên GPU> <số GPU> 2.4.6 1.18.0 1.9.0`. Nếu torch ra bản khác:

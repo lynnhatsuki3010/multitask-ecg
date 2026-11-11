@@ -11,7 +11,7 @@ from src.models.backbones import (
     HybridTransformerBackbone,
     MultiBranchTransformerBackbone,
 )
-from src.models.baselines import ECGTransFormBackbone
+from src.models.baselines import ECGTransFormBackbone, Inception1dBackbone, XResNet1d101Backbone
 from src.models.ecg_multitask import ECGMIModel, ECGMultiTaskModel
 
 
@@ -126,6 +126,19 @@ def build_model(
                              * cfg["dataset"].get("duration_seconds", 10)),
             width_mult=float(model_cfg.get("width_mult", 1.0)),
         )
+    elif architecture == "xresnet1d101":
+        # PTB-XL benchmark baseline; deviations listed in src/models/baselines.py.
+        backbone = XResNet1d101Backbone(
+            num_leads=cfg["dataset"]["num_leads"],
+            input_downsample=int(model_cfg.get("input_downsample", 5)),
+            kernel_size=int(model_cfg.get("kernel_size", 5)),
+        )
+    elif architecture == "inception1d":
+        backbone = Inception1dBackbone(
+            num_leads=cfg["dataset"]["num_leads"],
+            input_downsample=int(model_cfg.get("input_downsample", 5)),
+            kernel_size=int(model_cfg.get("kernel_size", 40)),
+        )
     elif architecture == "mi_only":
         mi_branch_dim = int(model_cfg.get("mi_branch_dim", 128))
         return ECGMIModel(
@@ -137,7 +150,7 @@ def build_model(
         raise ValueError(
             f"Unsupported model.architecture='{architecture}'. "
             "Use 'cnn', 'hybrid_transformer', 'multi_branch_transformer', "
-            "'decoupled_multitask', 'ecgtransform', or 'mi_only'."
+            "'decoupled_multitask', 'ecgtransform', 'xresnet1d101', 'inception1d', or 'mi_only'."
         )
 
     head_hidden_dim = int(model_cfg.get("head_hidden_dim", d_model // 2))

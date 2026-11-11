@@ -37,6 +37,9 @@ def build_dataset_policy(cfg: dict, processed_path: str) -> dict:
         "test_fold": dataset_cfg.get("test_fold", 10),
         "val_fold": dataset_cfg.get("val_fold", 9),
         "selected_labels": [label["name"] for label in cfg.get("labels", [])],
+        # Which SCP codes feed a grouped label (e.g. LBBB). Two datasets with the
+        # same label names can still differ here, so it has to be audited.
+        "label_groups_override": cfg.get("label_groups_override") or {},
     }
 
 
@@ -95,6 +98,17 @@ def audit_dataset_policy(
                     f"{expected.get('label_threshold')} and IMI override={current_override}."
                 )
     else:
+        # Cross-validation runs move test/val across folds on purpose; the labels
+        # are fold-independent, so only the split keys are exempt.
+        cv_run = cfg.get("dataset", {}).get("cv_fold") is not None
+        fold_keys = {"test_fold", "val_fold"} if cv_run else set()
+        # Older manifests predate label_groups_override; treat absence as "no override".
+        if stored.get("label_groups_override", {}) != expected.get("label_groups_override", {}):
+            errors.append(
+                "Dataset policy mismatch for 'label_groups_override': "
+                f"stored={stored.get('label_groups_override', {})!r}, "
+                f"expected={expected.get('label_groups_override', {})!r}"
+            )
         for key in [
             "sampling_rate",
             "signal_length",
@@ -116,6 +130,8 @@ def audit_dataset_policy(
             "selected_labels",
             "label_threshold_overrides",
         ]:
+            if key in fold_keys:
+                continue
             if stored.get(key) != expected.get(key):
                 errors.append(
                     f"Dataset policy mismatch for '{key}': "

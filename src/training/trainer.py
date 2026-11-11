@@ -229,7 +229,8 @@ class Trainer:
 
         # History
         self.history: Dict[str, list] = {"train": [], "val": []}
-        self.best_monitor_value = -1.0
+        # -inf, not -1: a negated loss can sit below -1 early in training.
+        self.best_monitor_value = float("-inf")
         self.no_improve_count = 0
         
         # Restore history if resuming
@@ -247,7 +248,7 @@ class Trainer:
                             self.best_monitor_value = val
                             
                     print(f"  Loaded history from {hist_path}")
-                    print(f"  Restored best {self.monitor_metric}: {self.best_monitor_value:.4f}")
+                    print(f"  Restored best {self.monitor_metric}: {self._shown(self.best_monitor_value):.4f}")
                 except Exception as e:
                     print(f"  [warn] Could not load history.json: {e}")
 
@@ -279,14 +280,27 @@ class Trainer:
         "imi_f1_tuned": ["tuned/f1/mi/IMI"],
         "macro_f1_tuned": ["tuned/f1/arrhy/macro", "tuned/f1/mi/macro"],
         "mi_macro_f1_tuned": ["tuned/f1/mi/macro"],
+        # Losses. Selecting the checkpoint by the endpoint itself (imi_auprc) makes
+        # every validation number reported at that epoch optimistic; a loss is a
+        # different quantity from any AUPRC endpoint, so it keeps selection and
+        # reporting apart. Lower is better - see LOWER_IS_BETTER.
+        "val_loss": ["loss/total"],
+        "mi_loss": ["loss/mi"],
     }
+    LOWER_IS_BETTER = {"val_loss", "mi_loss"}
 
     def _compute_monitor_value(self, metrics: Dict[str, Union[float, str]]) -> float:
+        """Higher is always better; losses are negated so one comparison serves all."""
         metric_keys = self.MONITOR_ALIASES.get(self.monitor_metric, None)
         if metric_keys is None:
             metric_keys = [self.monitor_metric]
         values = [metrics.get(key, float("nan")) for key in metric_keys]
-        return float(np.nanmean(values))
+        value = float(np.nanmean(values))
+        return -value if self.monitor_metric in self.LOWER_IS_BETTER else value
+
+    def _shown(self, monitor_value: float) -> float:
+        """Undo the sign flip of LOWER_IS_BETTER monitors for printing."""
+        return -monitor_value if self.monitor_metric in self.LOWER_IS_BETTER else monitor_value
 
     def _monitor_label(self) -> str:
         friendly = {
@@ -520,9 +534,9 @@ class Trainer:
                         self.model, self.optimizer, epoch, val_metrics,
                         os.path.join(self.checkpoint_dir, "best_model.pth"),
                     )
-                    print(f"  ✓ New best {monitor_label}: {monitor_value:.4f} → saved best_model.pth")
+                    print(f"  ✓ New best {monitor_label}: {self._shown(monitor_value):.4f} → saved best_model.pth")
                 else:
-                    print(f"  ✓ New best {monitor_label}: {monitor_value:.4f}")
+                    print(f"  ✓ New best {monitor_label}: {self._shown(monitor_value):.4f}")
             else:
                 self.no_improve_count += 1
 
@@ -547,12 +561,12 @@ class Trainer:
             with open(os.path.join(self.checkpoint_dir, "history.json"), "w") as f:
                 json.dump(self.history, f, indent=2)
             print(f"\n{'='*60}")
-            print(f"  Training complete. Best {self._monitor_label()}: {self.best_monitor_value:.4f}")
+            print(f"  Training complete. Best {self._monitor_label()}: {self._shown(self.best_monitor_value):.4f}")
             print(f"  History saved to {self.checkpoint_dir}/history.json")
             print(f"{'='*60}\n")
         else:
             print(f"\n{'='*60}")
-            print(f"  Training complete. Best {self._monitor_label()}: {self.best_monitor_value:.4f}")
+            print(f"  Training complete. Best {self._monitor_label()}: {self._shown(self.best_monitor_value):.4f}")
             print(f"{'='*60}\n")
 
     def find_thresholds(

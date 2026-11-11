@@ -51,7 +51,10 @@ MONITOR_ALIASES = {
     "asmi_f1": ["f1/mi/ASMI"],
     "asmi_auroc": ["auroc/mi/ASMI"],
     "asmi_auprc": ["auprc/mi/ASMI"],
+    "val_loss": ["loss/total"],
+    "mi_loss": ["loss/mi"],
 }
+LOWER_IS_BETTER = {"val_loss", "mi_loss"}
 
 # Stage winners are a different decision from checkpoint selection, so they get a
 # different metric. Picking the recipe by one label's AUPRC would quietly optimise
@@ -162,10 +165,12 @@ def best_val_epoch(run_dir: Path, override: Optional[str] = None) -> Optional[Tu
     val = history.get("val") or []
     name, keys = monitor_keys(run_dir, override)
 
+    sign = -1.0 if name in LOWER_IS_BETTER else 1.0
+
     def score(entry: Dict) -> float:
         vals = [entry.get(k) for k in keys]
         vals = [v for v in vals if v is not None]
-        return sum(vals) / len(vals) if vals else float("nan")
+        return sign * sum(vals) / len(vals) if vals else float("nan")
 
     scored = [(i, e) for i, e in enumerate(val) if not math.isnan(score(e))]
     if not scored:

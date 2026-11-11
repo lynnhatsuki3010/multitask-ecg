@@ -484,6 +484,14 @@ def parse_args():
     p.add_argument("--split-test-fold-index", type=int, default=None, help="Override dataset.split_test_fold_index from config for audit/reproducibility")
     p.add_argument("--split-val-fold-index", type=int, default=None, help="Override dataset.split_val_fold_index from config for audit/reproducibility")
     p.add_argument("--split-stratify-label", default=None, help="Override dataset.split_stratify_label from config for audit/reproducibility")
+    p.add_argument("--cv-fold", type=int, default=None, choices=range(1, 11), metavar="K",
+                   help="10-fold CV over PTB-XL strat_fold: fold K is test, fold K%%10+1 is "
+                        "validation, the other eight train. Reads the split files written by "
+                        "scripts/26_make_cv_splits.py")
+    p.add_argument("--run-name", default=None,
+                   help="Fixed run folder under paths.checkpoints (may contain one '/'), instead of "
+                        "run_<timestamp>_<tags>. Used by scripts/cloud/run_cv.sh so a job always "
+                        "knows its folder; refuses to reuse a folder that already holds a model")
     return p.parse_args()
 
 
@@ -868,10 +876,32 @@ def audit_and_save_dataset_policy(cfg: dict, data: dict, run_dir: str) -> None:
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+def apply_cv_fold(cfg: dict, k: int) -> dict:
+    """Point the run at CV fold k: test = k, validation = k % 10 + 1.
+
+    Each fold has its own split directory, so every downstream script that reads
+    config_snapshot.yaml (calibration, error analysis, logit dumps) sees the same
+    three index sets without knowing about CV.
+    """
+    val = k % 10 + 1
+    ds = cfg.setdefault("dataset", {})
+    ds.update(split_method="strat_fold", test_fold=k, val_fold=val, cv_fold=k)
+    cfg["paths"]["splits"] = f"{cfg['paths']['splits']}_cvf{k}"
+    fs = ds["sampling_rate"]
+    missing = [s for s in ("train", "val", "test")
+               if not os.path.exists(os.path.join(f"{cfg['paths']['splits']}_{fs}hz", f"{s}_indices.npy"))]
+    if missing:
+        sys.exit(f"CV fold {k}: missing {missing} in {cfg['paths']['splits']}_{fs}hz. "
+                 "Run scripts/26_make_cv_splits.py first.")
+    return cfg
+
+
 def main():
     args = parse_args()
     cfg  = load_config(args.config)
     cfg  = apply_dataset_cli_overrides(cfg, args)
+    if args.cv_fold is not None:
+        cfg = apply_cv_fold(cfg, args.cv_fold)
 
     # Overrides from CLI
     if args.epochs:
@@ -945,10 +975,17 @@ def main():
             tag_parts.append("aug")
             if aug_cfg.get("aug_mixup"):
                 tag_parts.append("mxp")
+        if args.cv_fold is not None:
+            # fold and lr make a CV run's folder unique: the lr grid runs the same arm
+            # and fold three times, and they may start within the same second.
+            tag_parts.append(f"cvf{args.cv_fold}")
+            tag_parts.append(f"lr{cfg['training']['lr']:g}")
         if args.debug:                              tag_parts.append("debug")
         tag = ("_" + "-".join(tag_parts)) if tag_parts else ""
-        run_name = f"run_{ts}{tag}"
+        run_name = args.run_name or f"run_{ts}{tag}"
         run_dir  = os.path.join(cfg["paths"]["checkpoints"], run_name)
+        if args.run_name and os.path.exists(os.path.join(run_dir, "best_model.pth")):
+            sys.exit(f"--run-name {args.run_name}: {run_dir} already holds a model; remove it first")
         os.makedirs(run_dir, exist_ok=True)
 
     # Override checkpoint path so Trainer saves into run_dir

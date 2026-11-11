@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.models.backbones import (
     AttentionPooling,
@@ -806,6 +807,48 @@ class DynamicLeadAttention(nn.Module):
         return adds
 
 
+def _pairsoft_logits(z_a: torch.Tensor, z_b: torch.Tensor):
+    """Logits of a, b under a softmax over {neither: 0, a: z_a, b: z_b}.
+
+    p_a = e^z_a / (1 + e^z_a + e^z_b), so logit(p_a) = z_a - log(1 + e^z_b): the two
+    probabilities sum to at most 1 and each label is scored against its sibling.
+    """
+    return z_a - F.softplus(z_b), z_b - F.softplus(z_a)
+
+
+def _hier_logits(z_terr: torch.Tensor, z_ext: torch.Tensor, eps: float = 1e-6):
+    """Logits of (narrow, extended) from territory and extension scores.
+
+    log p_narrow   = log sigma(z_terr) + log sigma(-z_ext)
+    log p_extended = log sigma(z_terr) + log sigma(z_ext)
+    logit(p) = log p - log(1 - p), with 1 - p computed in log space for stability.
+    """
+    def logit_from_logp(logp):
+        logp = logp.clamp(max=-eps)
+        return logp - torch.log(-torch.expm1(logp))
+    lt = F.logsigmoid(z_terr)
+    return logit_from_logp(lt + F.logsigmoid(-z_ext)), logit_from_logp(lt + F.logsigmoid(z_ext))
+
+
+class PlainMIHead(nn.Module):
+    """MI head with no anatomical prior, for published backbones run as published.
+
+    The shared backbone's pooled features and an attention-pooled MI token feed one
+    MLP over the four MI labels - the same form as the arrhythmia head. MIHead, by
+    contrast, adds LeadGroupEncoders on the raw signal, which would hand every
+    baseline the very lead-grouping idea under test.
+    """
+
+    def __init__(self, shared_dim: int, num_labels: int, hidden_dim: int, dropout: float) -> None:
+        super().__init__()
+        self.pool = TaskTokenPooling(shared_dim, dropout)
+        self.head = MLPHead(shared_dim * 2, num_labels, hidden_dim=hidden_dim, dropout=dropout)
+
+    def forward(self, signal: torch.Tensor, shared_features: torch.Tensor,
+                sequence_features: torch.Tensor) -> torch.Tensor:
+        return self.head(torch.cat([shared_features, self.pool(sequence_features)], dim=-1))
+
+
 class DecoupledSubsetMIHead(nn.Module):
     """E10/E11: subset LeadGroupEncoder + group TF only — no shared CNN expert fusion.
 
@@ -830,7 +873,23 @@ class DecoupledSubsetMIHead(nn.Module):
                        ARCH-10 ("contrast_v2") it completes the layout x contrast
                        2x2 under full decoupling. Here the lateral evidence can reach
                        the IMI head only through the difference with the ILMI context.
+      - "shared_pairsoft": the "shared" layout with the sibling labels of each pair
+                       made mutually exclusive by construction - a three-way softmax
+                       over {neither, narrow, extended} (IMI/ILMI, ASMI/AMI never
+                       co-occur in PTB-XL). Label-structure baseline: tests whether
+                       encoding the annotation convention fixes ILMI->IMI without
+                       any change to which leads each label sees.
+      - "shared_hier": the "shared" layout with a factorised pair, P(narrow) =
+                       P(territory) * (1 - P(extension)), P(extended) = P(territory)
+                       * P(extension). The narrow label's context scores the territory,
+                       the extended label's context (which reads the extension leads)
+                       scores the extension. Label-structure baseline.
+
+    The two structured modes return the logit of the structured probability, so
+    the loss, temperature scaling and thresholds downstream are unchanged.
     """
+
+    STRUCTURED_MODES = ("shared_pairsoft", "shared_hier")
 
     INFEROLATERAL_LEADS = INFERIOR_LEADS + RECIPROCAL_LEADS + LATERAL_LEADS
 
@@ -969,6 +1028,12 @@ class DecoupledSubsetMIHead(nn.Module):
         asmi = self.asmi_head(asmi_ctx)
         ilmi = self.ilmi_head(ilmi_ctx)
         ami  = self.ami_head(ami_ctx)
+        if self.head_mode == "shared_pairsoft":
+            imi, ilmi = _pairsoft_logits(imi, ilmi)
+            asmi, ami = _pairsoft_logits(asmi, ami)
+        elif self.head_mode == "shared_hier":
+            imi, ilmi = _hier_logits(imi, ilmi)
+            asmi, ami = _hier_logits(asmi, ami)
         return torch.cat([imi, asmi, ilmi, ami], dim=-1)
 
     def _forward_contrast(self, signal: torch.Tensor) -> torch.Tensor:
@@ -1263,6 +1328,20 @@ class ECGMultiTaskModel(nn.Module):
                 use_cross_attention=use_cross_attention,
                 use_contrast=(mi_head_mode != "contrast_shared_nogate"),
                 contrast_gated=(mi_head_mode != "contrast_shared_ungated"),
+            )
+            self.conduction_head = ConductionHead(
+                shared_dim=shared_dim,
+                num_conduction_labels=num_conduction_labels,
+                hidden_dim=head_hidden_dim,
+                dropout=dropout,
+                cd_lead_dim=cd_lead_dim,
+            )
+        elif mi_head_mode == "plain":
+            # Published backbones as published: no anatomical lead grouping in the
+            # MI head (see PlainMIHead).
+            self.mi_head = PlainMIHead(
+                shared_dim=shared_dim, num_labels=num_mi_labels,
+                hidden_dim=head_hidden_dim, dropout=dropout,
             )
             self.conduction_head = ConductionHead(
                 shared_dim=shared_dim,

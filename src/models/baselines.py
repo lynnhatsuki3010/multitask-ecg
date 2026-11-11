@@ -263,3 +263,155 @@ class ECGTransFormBackbone(nn.Module):
             "global_features": seq.mean(dim=1),
             "sequence_features": seq,
         }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PTB-XL benchmark baselines (Strodthoff et al., IEEE JBHI 2021)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# xresnet1d101 and inception1d are the two strongest models of the PTB-XL
+# benchmark (github.com/helme/ecg_ptbxl_benchmarking). That repository is
+# GPL-3.0, so nothing below is copied from it: the classes are written for this
+# project from the architecture its code specifies (layer counts, widths, kernel
+# sizes, stem, shortcut and initialisation rules), which a reader can check
+# against code/models/xresnet1d.py and code/models/inception1d.py there.
+#
+# Deviations forced by this project's protocol - REPORT THESE
+# -----------------------------------------------------------
+# 1. Input. The benchmark trains on random 2.5 s crops at 100 Hz and averages
+#    sliding-window predictions at test time. Here the input is the full 10 s at
+#    500 Hz, average-pooled by `input_downsample` (default 5, i.e. to 100 Hz) so
+#    every kernel keeps the receptive field in seconds that it was designed for.
+# 2. Head. The benchmark's head is concat pooling (avg + max) -> BN -> dropout ->
+#    Linear(128) -> ReLU -> BN -> dropout -> Linear. Here the backbone stops at the
+#    last feature map and this project's multitask heads take over, with the
+#    "plain" MI head so that no anatomical lead grouping is added to the baseline.
+# 3. Optimisation. The benchmark uses fastai's one-cycle schedule (lr 1e-2, 50
+#    epochs, BCE). Here the baselines get their own epoch and learning-rate budget
+#    under AdamW + cosine and the shared loss; see the CV protocol document.
+
+
+class _ConvBNAct(nn.Sequential):
+    """Conv1d -> BatchNorm1d (-> ReLU). BN starts at weight 1 (or 0) and bias 1e-3."""
+
+    def __init__(self, ni: int, nf: int, ks: int, stride: int = 1, act: bool = True,
+                 zero_bn: bool = False) -> None:
+        conv = nn.Conv1d(ni, nf, ks, stride=stride, padding=(ks - 1) // 2, bias=False)
+        nn.init.kaiming_normal_(conv.weight)
+        bn = nn.BatchNorm1d(nf)
+        nn.init.constant_(bn.weight, 0.0 if zero_bn else 1.0)
+        nn.init.constant_(bn.bias, 1e-3)
+        super().__init__(conv, bn, *([nn.ReLU(inplace=True)] if act else []))
+
+
+class _XBottleneck(nn.Module):
+    """Bottleneck residual block: 1x1 -> k (stride) -> 1x1 x4, zero-initialised last BN.
+
+    The shortcut average-pools first when the block downsamples, then matches
+    channels with a 1x1 conv + BN - the "ResNet-D" shortcut of the xresnet family.
+    """
+
+    def __init__(self, ni: int, width: int, stride: int, ks: int, expansion: int = 4) -> None:
+        super().__init__()
+        nf = width * expansion
+        self.convs = nn.Sequential(
+            _ConvBNAct(ni, width, 1),
+            _ConvBNAct(width, width, ks, stride=stride),
+            _ConvBNAct(width, nf, 1, act=False, zero_bn=True),
+        )
+        short = []
+        if stride != 1:
+            short.append(nn.AvgPool1d(2, ceil_mode=True))
+        if ni != nf:
+            short.append(_ConvBNAct(ni, nf, 1, act=False))
+        self.shortcut = nn.Sequential(*short)
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act(self.convs(x) + self.shortcut(x))
+
+
+class XResNet1d101Backbone(nn.Module):
+    """xresnet1d101 as configured in the PTB-XL benchmark.
+
+    Stem: three conv-BN-ReLU layers (12 -> 32 -> 32 -> 64, kernel 5, first stride 2)
+    and max-pool 3/2. Four stages of bottleneck blocks, [3, 4, 23, 3], all of width
+    64 with expansion 4 (the benchmark narrows the vision widths 64-128-256-512 to
+    64 throughout), kernel 5, stride 1 in the first stage and 2 after. Output 256
+    channels.
+    """
+
+    def __init__(self, num_leads: int = 12, input_downsample: int = 5, kernel_size: int = 5,
+                 layers=(3, 4, 23, 3), width: int = 64, expansion: int = 4) -> None:
+        super().__init__()
+        self.down = nn.AvgPool1d(input_downsample) if input_downsample > 1 else nn.Identity()
+        self.stem = nn.Sequential(
+            _ConvBNAct(num_leads, 32, kernel_size, stride=2),
+            _ConvBNAct(32, 32, kernel_size),
+            _ConvBNAct(32, 64, kernel_size),
+            nn.MaxPool1d(3, stride=2, padding=1),
+        )
+        blocks, ni = [], 64
+        for i, n in enumerate(layers):
+            for j in range(n):
+                blocks.append(_XBottleneck(ni, width, stride=(2 if (i > 0 and j == 0) else 1),
+                                           ks=kernel_size, expansion=expansion))
+                ni = width * expansion
+        self.blocks = nn.Sequential(*blocks)
+        self.output_dim = ni
+
+    def forward(self, x_in: torch.Tensor) -> Dict[str, torch.Tensor]:
+        seq = self.blocks(self.stem(self.down(x_in))).transpose(1, 2)    # (B, T, C)
+        return {"global_features": seq.mean(dim=1), "sequence_features": seq}
+
+
+class _InceptionBlock(nn.Module):
+    """Bottleneck 1x1 -> three parallel convs (kernels kss) + maxpool/1x1 branch -> BN-ReLU."""
+
+    def __init__(self, ni: int, nb_filters: int, kss, bottleneck: int) -> None:
+        super().__init__()
+        self.bottleneck = nn.Conv1d(ni, bottleneck, 1, bias=False)
+        self.convs = nn.ModuleList(
+            [nn.Conv1d(bottleneck, nb_filters, k, padding=(k - 1) // 2, bias=False) for k in kss])
+        self.pool_branch = nn.Sequential(nn.MaxPool1d(3, stride=1, padding=1),
+                                         nn.Conv1d(ni, nb_filters, 1, bias=False))
+        self.bn_relu = nn.Sequential(nn.BatchNorm1d(nb_filters * (len(kss) + 1)), nn.ReLU())
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b = self.bottleneck(x)
+        return self.bn_relu(torch.cat([c(b) for c in self.convs] + [self.pool_branch(x)], dim=1))
+
+
+class Inception1dBackbone(nn.Module):
+    """inception1d (InceptionTime) as configured in the PTB-XL benchmark.
+
+    Six inception blocks, kernels 39/19/9 (from kernel_size 40), bottleneck 32, 32
+    filters per branch (128 channels out), with a 1x1 conv + BN residual shortcut
+    added after every third block. No temporal downsampling inside the network.
+    """
+
+    def __init__(self, num_leads: int = 12, input_downsample: int = 5, kernel_size: int = 40,
+                 depth: int = 6, bottleneck: int = 32, nb_filters: int = 32) -> None:
+        super().__init__()
+        assert depth % 3 == 0
+        kss = [k - 1 if k % 2 == 0 else k for k in (kernel_size, kernel_size // 2, kernel_size // 4)]
+        out = nb_filters * (len(kss) + 1)
+        self.down = nn.AvgPool1d(input_downsample) if input_downsample > 1 else nn.Identity()
+        self.blocks = nn.ModuleList(
+            [_InceptionBlock(num_leads if d == 0 else out, nb_filters, kss, bottleneck) for d in range(depth)])
+        self.shortcuts = nn.ModuleList(
+            [nn.Sequential(nn.Conv1d(num_leads if d == 0 else out, out, 1, bias=False), nn.BatchNorm1d(out))
+             for d in range(depth // 3)])
+        self.act = nn.ReLU()
+        self.output_dim = out
+
+    def forward(self, x_in: torch.Tensor) -> Dict[str, torch.Tensor]:
+        x = self.down(x_in)
+        res = x
+        for d, block in enumerate(self.blocks):
+            x = block(x)
+            if d % 3 == 2:
+                x = self.act(x + self.shortcuts[d // 3](res))
+                res = x
+        seq = x.transpose(1, 2)                                            # (B, T, C)
+        return {"global_features": seq.mean(dim=1), "sequence_features": seq}
